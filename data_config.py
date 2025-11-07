@@ -352,49 +352,109 @@ def import_split_and_save_field_data_excel(filepath, data_start_row=5, save_as=N
                         existing_info = existing_info.drop_duplicates(subset=['Abreviation'], keep='first')
                         print(f"Removed duplicate metadata entries, keeping first occurrence")
                     
-                    # Merge new columns into existing data
-                    merged_data = existing_data.copy()
+                    # Merge new data (rows + columns) into existing data
                     merged_info = existing_info.copy()
-                    
-                    new_columns = []
-                    for col in df_raw.columns:
-                        if col not in merged_data.columns:
-                            # Add new column
-                            merged_data[col] = df_raw[col]
-                            new_columns.append(col)
-                            
-                            # Add metadata for new column (check if already exists)
-                            existing_metadata = merged_info[merged_info['Abreviation'].str.strip() == col.strip()]
-                            if existing_metadata.empty:
-                                col_info = df_raw_info[df_raw_info['Abreviation'].str.strip() == col.strip()]
-                                if not col_info.empty:
-                                    merged_info = pd.concat([merged_info, col_info], ignore_index=True)
+
+                    new_columns = [col for col in df_raw.columns if col not in existing_data.columns]
+
+                    if 'AFN' in existing_data.columns and 'AFN' in df_raw.columns:
+                        existing_for_merge = existing_data.copy()
+                        new_for_merge = df_raw.copy()
+
+                        existing_for_merge['AFN'] = pd.to_numeric(existing_for_merge['AFN'], errors='coerce')
+                        new_for_merge['AFN'] = pd.to_numeric(new_for_merge['AFN'], errors='coerce')
+
+                        existing_afn_set = set(existing_for_merge['AFN'].dropna().astype('Int64').tolist())
+                        new_afn_series = pd.to_numeric(new_for_merge['AFN'].dropna(), errors='coerce').dropna()
+                        new_afn_set = set(new_afn_series.astype('Int64').tolist())
+                        added_afns = sorted(list(new_afn_set - existing_afn_set))
+                        if added_afns:
+                            preview = ", ".join(str(afn) for afn in added_afns[:10])
+                            suffix = "..." if len(added_afns) > 10 else ""
+                            print(f"Adding {len(added_afns)} new AFNs: {preview}{suffix}")
+
+                        existing_non_na = existing_for_merge[existing_for_merge['AFN'].notna()].copy()
+                        existing_na = existing_for_merge[existing_for_merge['AFN'].isna()].copy()
+                        new_non_na = new_for_merge[new_for_merge['AFN'].notna()].copy()
+                        new_na = new_for_merge[new_for_merge['AFN'].isna()].copy()
+
+                        if not existing_non_na.empty:
+                            existing_non_na['AFN'] = existing_non_na['AFN'].astype('Int64')
+                        if not new_non_na.empty:
+                            new_non_na['AFN'] = new_non_na['AFN'].astype('Int64')
+
+                        existing_non_na = existing_non_na.drop_duplicates(subset=['AFN'], keep='first')
+                        new_non_na = new_non_na.drop_duplicates(subset=['AFN'], keep='last')
+
+                        existing_indexed = existing_non_na.set_index('AFN')
+                        new_indexed = new_non_na.set_index('AFN')
+
+                        merged_non_na = new_indexed.combine_first(existing_indexed)
+                        merged_non_na = merged_non_na.sort_index().reset_index()
+
+                        column_order = existing_data.columns.tolist()
+                        for col in df_raw.columns:
+                            if col not in column_order:
+                                column_order.append(col)
+                        if 'AFN' in column_order:
+                            column_order.insert(0, column_order.pop(column_order.index('AFN')))
+
+                        merged_non_na = merged_non_na.reindex(columns=column_order)
+
+                        if not new_na.empty:
+                            na_rows = new_na
+                        elif not existing_na.empty:
+                            na_rows = existing_na
                         else:
-                            # Column exists - update values (assuming same AFN structure)
-                            print(f"Column '{col}' already exists - updating values")
+                            na_rows = pd.DataFrame(columns=column_order)
+                        na_rows = na_rows.reindex(columns=column_order)
+
+                        merged_data = pd.concat([merged_non_na, na_rows], ignore_index=True, sort=False)
+                        merged_data = merged_data.reindex(columns=column_order)
+
+                        if 'AFN' in merged_data.columns:
+                            merged_data['AFN'] = pd.to_numeric(merged_data['AFN'], errors='coerce')
+                            merged_data['AFN'] = merged_data['AFN'].astype('Int64')
+                    else:
+                        print("Warning: 'AFN' column missing - falling back to column-wise merge without row expansion")
+                        merged_data = existing_data.copy()
+                        for col in df_raw.columns:
                             merged_data[col] = df_raw[col]
-                            
-                            # Also update metadata for existing column (in case it changed in Excel)
-                            existing_metadata = merged_info[merged_info['Abreviation'].str.strip() == col.strip()]
-                            col_info = df_raw_info[df_raw_info['Abreviation'].str.strip() == col.strip()]
-                            
-                            if not col_info.empty and not existing_metadata.empty:
-                                # Update existing metadata row
-                                idx = existing_metadata.index[0]
-                                merged_info.at[idx, 'Units'] = col_info.iloc[0]['Units']
-                                merged_info.at[idx, 'Data_Type'] = col_info.iloc[0]['Data_Type']
-                                merged_info.at[idx, 'Long Name'] = col_info.iloc[0]['Long Name']
-                                merged_info.at[idx, 'Description'] = col_info.iloc[0]['Description']
-                                print(f"  Updated metadata for column: {col}")
-                            elif not col_info.empty and existing_metadata.empty:
-                                # Column exists in data but not in metadata - add it
-                                merged_info = pd.concat([merged_info, col_info], ignore_index=True)
-                                print(f"  Added missing metadata for column: {col}")
-                    
+                        column_order = merged_data.columns.tolist()
+                        if 'AFN' in column_order:
+                            column_order.insert(0, column_order.pop(column_order.index('AFN')))
+                        merged_data = merged_data.reindex(columns=column_order)
+
+                    merged_info['Abreviation'] = merged_info['Abreviation'].astype(str).str.strip()
+
+                    for _, meta_row in df_raw_info.iterrows():
+                        abbr = meta_row['Abreviation']
+                        if pd.isna(abbr):
+                            continue
+                        abbr_str = str(abbr).strip()
+                        existing_metadata = merged_info[merged_info['Abreviation'] == abbr_str]
+                        if existing_metadata.empty:
+                            new_meta = pd.DataFrame({
+                                'Abreviation': [abbr_str],
+                                'Units': [meta_row['Units']],
+                                'Data_Type': [meta_row['Data_Type']],
+                                'Long Name': [meta_row['Long Name']],
+                                'Description': [meta_row['Description']]
+                            })
+                            merged_info = pd.concat([merged_info, new_meta], ignore_index=True)
+                        else:
+                            idx = existing_metadata.index[0]
+                            merged_info.at[idx, 'Units'] = meta_row['Units']
+                            merged_info.at[idx, 'Data_Type'] = meta_row['Data_Type']
+                            merged_info.at[idx, 'Long Name'] = meta_row['Long Name']
+                            merged_info.at[idx, 'Description'] = meta_row['Description']
+
+                    column_names_str = [str(col).strip() for col in merged_data.columns]
+                    merged_info = merged_info[merged_info['Abreviation'].isin(column_names_str)].reset_index(drop=True)
+
                     if new_columns:
                         print(f"Added new columns: {new_columns}")
-                    
-                    # Use merged data
+
                     df_raw = merged_data
                     df_raw_info = merged_info
                 else:
