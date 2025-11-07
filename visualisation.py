@@ -30,14 +30,12 @@ GLOBAL_DPI = 100
 
 # Default color cycle for plots
 DEFAULT_COLOR_CYCLE = [
-    lo.COLORS['indigo'],
+    lo.COLORS['red'],
     lo.COLORS['orange'], 
-    lo.COLORS['darkred'],
-    lo.COLORS['olive'],
-    lo.COLORS['magenta'],
     lo.COLORS['gold'],
-    lo.COLORS['lightpurple'],
-    lo.COLORS['yellowgreen']
+    lo.COLORS['blue'],
+    lo.COLORS['lightblue'],
+    lo.COLORS['indigo'],
 ]
 
 # General plotting styles
@@ -331,7 +329,7 @@ def distance_force_plot(df_or_path, title="Distance vs Force", figsize=None, dpi
         fig, ax = plt.subplots(figsize=fig_size, dpi=dpi)
         
         # Plot the curve
-        ax.plot(w, P, color=lo.COLORS['magenta'], alpha=1, linewidth=2.0)
+        ax.plot(w, P, color=lo.COLORS['blue'], alpha=1, linewidth=2.0)
         
         # Set labels and title
         ax.set_xlabel(r'Distance (mm) $\longrightarrow$', fontsize=VISUALIZATION_STYLES['font_size'], labelpad=15)

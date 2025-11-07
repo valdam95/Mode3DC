@@ -195,7 +195,7 @@ def create_interactive_plot(df, afn_list, afn_index, parquet_path):
     ax.set_yscale('linear')
     
     # Plot the load-displacement curve
-    line, = ax.plot(w, P, color=lo.COLORS['magenta'], alpha=1.0, linewidth=2.0, label='Load Signal')
+    line, = ax.plot(w, P, color=lo.COLORS['indigo'], alpha=1.0, linewidth=2.0, label='Load Signal')
     
     # Set labels and title
     ax.set_xlabel(r'Distance (mm) $\longrightarrow$', fontsize=20, labelpad=10)
@@ -1178,25 +1178,25 @@ def update_ui_colors(state):
     
     # Drawing mode box
     if state['drawing_mode']:
-        ui['box_d_bg'].set_facecolor(lo.COLORS['yellowgreen'])
+        ui['box_d_bg'].set_facecolor(lo.COLORS['gold'])
     else:
         ui['box_d_bg'].set_facecolor('lightgray')
     
     # Offset mode box
     if state.get('selection_mode') == 'O':
-        ui['box_o_bg'].set_facecolor(lo.COLORS['yellowgreen'])
+        ui['box_o_bg'].set_facecolor(lo.COLORS['gold'])
     else:
         ui['box_o_bg'].set_facecolor('lightgray')
     
     # Linear mode box
     if state.get('selection_mode') == 'L':
-        ui['box_l_bg'].set_facecolor(lo.COLORS['yellowgreen'])
+        ui['box_l_bg'].set_facecolor(lo.COLORS['gold'])
     else:
         ui['box_l_bg'].set_facecolor('lightgray')
     
     # Peak mode box
     if state.get('selection_mode') == 'P':
-        ui['box_p_bg'].set_facecolor(lo.COLORS['yellowgreen'])
+        ui['box_p_bg'].set_facecolor(lo.COLORS['gold'])
     else:
         ui['box_p_bg'].set_facecolor('lightgray')
     
