@@ -51,10 +51,15 @@ import os
 import sys
 import argparse
 import layout as lo
-import visualisation as vis
 
-# Setup visualization styling
-vis.setup_visualization_style()
+# Try to import visualisation module (optional)
+try:
+    import visualisation as vis
+    # Setup visualization styling if available
+    vis.setup_visualization_style()
+except ImportError:
+    # visualisation module not available - continue without it
+    pass
 
 def main():
     """Main function to run the load signal analyser."""
