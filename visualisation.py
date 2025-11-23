@@ -361,3 +361,126 @@ def distance_force_plot(df_or_path, title="Distance vs Force", figsize=None, dpi
     
     # Return None to ensure no extra output
     return None
+
+#--- just temp function -- 
+import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+import pandas as pd
+import layout as lo
+
+def extract_pc_force(value):
+    """Return the second element of P_c if available (force component)."""
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return value[1]
+    return None
+
+def plot_pe_vs_afn_compare(df):
+    """
+    Scatter comparison of estimated peak load P_e vs. actual signal peak P_c.
+    - Colors encode measurement date (layout palette).
+    - Circles: P_c (actual from signal)
+    - Diamonds: P_e (estimated)
+    - AFN labels shown next to P_c.
+    """
+    if df.empty:
+        print("DataFrame is empty.")
+        return
+
+    required = {'AFN', 'P_e', 'P_c', 'date', 'phi'}
+    if not required.issubset(df.columns):
+        missing = ', '.join(required - set(df.columns))
+        print(f"Missing required columns: {missing}")
+        return
+
+    plot_data = df[['AFN', 'P_e', 'P_c', 'date']].dropna(subset=['AFN', 'P_e', 'P_c', 'date'])
+    if plot_data.empty:
+        print("No rows with non-null AFN, P_e, P_c, and date.")
+        return
+
+    plot_data['date'] = pd.to_datetime(plot_data['date'], errors='coerce')
+    plot_data['P_c_force'] = plot_data['P_c'].apply(extract_pc_force)
+    plot_data = plot_data.dropna(subset=['date', 'P_c_force'])
+    if plot_data.empty:
+        print("No valid P_c force values found.")
+        return
+
+    palette = [
+        lo.COLORS['red'],
+        lo.COLORS['orange'],
+        lo.COLORS['gold'],
+        lo.COLORS['blue'],
+        lo.COLORS['lightblue'],
+        lo.COLORS['indigo'],
+    ]
+
+    unique_dates = plot_data['date'].sort_values().unique()
+    color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+
+    for date in unique_dates:
+        subset = plot_data[plot_data['date'] == date].copy()
+        subset['phi_numeric'] = pd.to_numeric(subset['phi'], errors='coerce')
+        color = color_map[date]
+        date_label = date.strftime('%Y-%m-%d')
+        label_added = False
+
+        subset_neg = subset[subset['phi_numeric'] < 0]
+        subset_pos = subset[subset['phi_numeric'] >= 0]
+        subset_na = subset[subset['phi_numeric'].isna()]
+
+        def scatter_points(dataframe, marker, face_alpha, edge_col, label=None):
+            if dataframe.empty:
+                return False
+            ax.scatter(
+                dataframe['AFN'],
+                dataframe['P_c_force'] if marker == 'o' else dataframe['P_e'],
+                color=color,
+                marker=marker,
+                alpha=face_alpha,
+                edgecolor=edge_col,
+                linewidth=1.0,
+                label=label
+            )
+            return True
+
+        if scatter_points(subset_pos, 'o', 0.9, 'white', date_label):
+            label_added = True
+        if scatter_points(subset_neg, 'o', 0.9, 'black', None if label_added else date_label):
+            label_added = True
+        if scatter_points(subset_na, 'o', 0.9, 'white', None if label_added else date_label):
+            label_added = True
+
+        scatter_points(subset_pos, 'D', 0.3, 'white')
+        scatter_points(subset_neg, 'D', 0.3, 'black')
+        scatter_points(subset_na, 'D', 0.3, 'white')
+
+        for _, row in subset.iterrows():
+            ax.text(
+                row['AFN'],
+                row['P_c_force'],
+                f"{int(row['AFN'])}",
+                fontsize=8,
+                color='black',
+                ha='left',
+                va='bottom'
+            )
+
+    ax.set_xlabel('AFN')
+    ax.set_ylabel('Force (N)')
+    ax.set_title('Peak Force Comparison: Estimated P_e vs. Actual P_c')
+    ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
+
+    # Legend for dates (colors)
+    date_legend = ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # Legend for marker meaning
+    marker_handles = [
+        mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=8, label='actual'),
+        mlines.Line2D([], [], color='gray', marker='D', linestyle='None', markersize=8, label='estimate')
+    ]
+    marker_legend = ax.legend(handles=marker_handles, loc='lower right')
+    ax.add_artist(date_legend)
+
+    plt.tight_layout()
+    plt.show()
