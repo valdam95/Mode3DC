@@ -18,11 +18,11 @@ import subprocess
 # ============================================================================
 
 # SMB Server connection
-SMB_SERVER_URL = 'smb://wsl.ch/fe'
+SMB_SERVER_URL = 'smb://wsl.ch'
 
 # Cross-platform server paths (check your operating system and update the paths)
 SERVER_PATHS = {
-    'macos': '/Volumes/lawprae/LBI/Projects/210_Weak_Layer_Mechanics/Valle/01_experiments/2025_Mode_III_displacement_controlled',
+    'macos': '/Volumes/fe/lawprae/LBI/Projects/210_Weak_Layer_Mechanics/Valle/01_experiments/2025_Mode_III_displacement_controlled',
     'linux': '',
     'windows': ''
 }
@@ -1014,7 +1014,7 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
             'units': 'N/s',
             'data_type': 'Float',
             'long_name': 'global force rate',
-            'description': 'The global force rate quantifies how quickly the applied force changes over time. It is obtained as the product of the global stiffness k and the actuator speed v (F_dot = 1e-3 * k * v, converting µm/s to mm/s)'
+            'description': 'The global force rate quantifies how quickly the applied force changes over time. It is obtained as the product of the global stiffness k and the shear speed (F_dot = 1e-3 * k * shear_speed, converting µm/s to mm/s)'
         }
     }
     
@@ -1083,6 +1083,46 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
             print(f"Merged analysis data for AFN {afn}")
         else:
             print(f"Warning: AFN {afn} not found in master data")
+    
+    # Calculate F_dot (global force rate) for all merged rows
+    # F_dot [N/s] = k [N/mm] * shear_speed [µm/s] * 1e-3 [mm/µm]
+    print(f"\nCalculating F_dot (global force rate)...")
+    f_dot_calculated = 0
+    f_dot_missing_data = 0
+    
+    if 'k' in df_merged.columns and 'shear speed' in df_merged.columns:
+        for idx, row in df_merged.iterrows():
+            k = row['k'] if 'k' in row.index else None
+            shear_speed = row['shear speed'] if 'shear speed' in row.index else None
+            
+            # Check if both k and shear_speed are available and valid
+            if pd.notna(k) and pd.notna(shear_speed):
+                try:
+                    k_val = float(k)
+                    shear_speed_val = float(shear_speed)
+                    F_dot = 1e-3 * k_val * shear_speed_val  # Convert µm/s to mm/s: 1e-3 mm/µm
+                    df_merged.at[idx, 'F_dot'] = F_dot
+                    f_dot_calculated += 1
+                except (ValueError, TypeError) as e:
+                    f_dot_missing_data += 1
+            else:
+                f_dot_missing_data += 1
+    else:
+        missing_cols = []
+        if 'k' not in df_merged.columns:
+            missing_cols.append('k')
+        if 'shear speed' not in df_merged.columns:
+            missing_cols.append('shear speed')
+        print(f"Warning: Cannot calculate F_dot - missing columns: {', '.join(missing_cols)}")
+    
+    if f_dot_calculated > 0:
+        print(f"  - Calculated F_dot for {f_dot_calculated} AFNs")
+    if f_dot_missing_data > 0:
+        print(f"  - Skipped {f_dot_missing_data} AFNs (missing k or shear speed)")
+    
+    # Ensure F_dot column has consistent data type (float64)
+    if 'F_dot' in df_merged.columns:
+        df_merged['F_dot'] = pd.to_numeric(df_merged['F_dot'], errors='coerce')
     
     print(f"\nAnalysis data merge summary:")
     print(f"  - Total AFNs in analysis data: {len(df_analysis)}")

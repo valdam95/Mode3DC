@@ -566,20 +566,11 @@ def on_mouse_click(event, state):
             df.at[row_idx, 'end_lin'] = [x2, y2]
             df.at[row_idx, 'k'] = k
             
-            # Calculate F_dot (global force rate) if v (actuator speed) is available
-            # F_dot [N/s] = k [N/mm] * v [µm/s] * 1e-3 [mm/µm]
-            if 'v' in df.columns and not pd.isna(df.at[row_idx, 'v']):
-                v = df.at[row_idx, 'v']  # Actuator speed in µm/s
-                F_dot = 1e-3 * k * v  # Convert µm/s to mm/s: 1e-3 mm/µm
-                df.at[row_idx, 'F_dot'] = F_dot
-                print(f"Calculated F_dot: {F_dot:.2f} N/s (k={k:.2f} N/mm, v={v:.2f} µm/s)")
+            # Note: F_dot calculation is now done in merge_load_analyser_data() in data_config.py
+            # This ensures it uses the 'shear speed' column and is calculated during merge
             
             # Ensure k column has consistent data type (float64)
             df['k'] = pd.to_numeric(df['k'], errors='coerce')
-            
-            # Ensure F_dot column has consistent data type (float64)
-            if 'F_dot' in df.columns:
-                df['F_dot'] = pd.to_numeric(df['F_dot'], errors='coerce')
             
             # Save to separate analysis Parquet file
             parquet_path = state['parquet_path']
