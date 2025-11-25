@@ -374,24 +374,42 @@ def extract_pc_force(value):
         return value[1]
     return None
 
-def plot_pe_vs_afn_compare(df):
+def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated P_e vs. Actual P_c"):
     """
     Scatter comparison of estimated peak load P_e vs. actual signal peak P_c.
     - Colors encode measurement date (layout palette).
     - Circles: P_c (actual from signal)
     - Diamonds: P_e (estimated)
     - AFN labels shown next to P_c.
+    - Black outline for negative phi, white outline for non-negative phi.
+    
+    Parameters:
+    -----------
+    parquet_path : str
+        Path to Parquet data file (e.g., "path/to/M3DC_raw.parquet")
+    title : str, optional
+        Title for the plot (default: "Peak Force Comparison: Estimated P_e vs. Actual P_c")
     """
+    import os
+    
+    # Load data from Parquet file
+    try:
+        df = pd.read_parquet(parquet_path, engine='fastparquet')
+        print(f"Loaded data from Parquet: {parquet_path}")
+    except Exception as e:
+        print(f"Error loading Parquet file {parquet_path}: {e}")
+        return None
+    
     if df.empty:
         print("DataFrame is empty.")
-        return
-
+        return None
+    
     required = {'AFN', 'P_e', 'P_c', 'date'}
     if not required.issubset(df.columns):
         missing = ', '.join(required - set(df.columns))
         print(f"Missing required columns: {missing}")
-        return
-
+        return None
+    
     # Check if phi column exists (optional)
     has_phi = 'phi' in df.columns
     
@@ -403,15 +421,15 @@ def plot_pe_vs_afn_compare(df):
     plot_data = df[plot_columns].dropna(subset=['AFN', 'P_e', 'P_c', 'date'])
     if plot_data.empty:
         print("No rows with non-null AFN, P_e, P_c, and date.")
-        return
-
+        return None
+    
     plot_data['date'] = pd.to_datetime(plot_data['date'], errors='coerce')
     plot_data['P_c_force'] = plot_data['P_c'].apply(extract_pc_force)
     plot_data = plot_data.dropna(subset=['date', 'P_c_force'])
     if plot_data.empty:
         print("No valid P_c force values found.")
-        return
-
+        return None
+    
     palette = [
         lo.COLORS['red'],
         lo.COLORS['orange'],
@@ -420,12 +438,12 @@ def plot_pe_vs_afn_compare(df):
         lo.COLORS['lightblue'],
         lo.COLORS['indigo'],
     ]
-
+    
     unique_dates = plot_data['date'].sort_values().unique()
     color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
-
+    
     fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
-
+    
     for date in unique_dates:
         subset = plot_data[plot_data['date'] == date].copy()
         
@@ -445,7 +463,7 @@ def plot_pe_vs_afn_compare(df):
         color = color_map[date]
         date_label = date.strftime('%Y-%m-%d')
         label_added = False
-
+        
         def scatter_points(dataframe, marker, face_alpha, edge_col, label=None):
             if dataframe.empty:
                 return False
@@ -460,18 +478,19 @@ def plot_pe_vs_afn_compare(df):
                 label=label
             )
             return True
-
+        
         if scatter_points(subset_pos, 'o', 0.9, 'white', date_label):
             label_added = True
         if scatter_points(subset_neg, 'o', 0.9, 'black', None if label_added else date_label):
             label_added = True
         if scatter_points(subset_na, 'o', 0.9, 'white', None if label_added else date_label):
             label_added = True
-
+        
         scatter_points(subset_pos, 'D', 0.3, 'white')
         scatter_points(subset_neg, 'D', 0.3, 'black')
         scatter_points(subset_na, 'D', 0.3, 'white')
-
+        
+        # Add AFN labels next to points
         for _, row in subset.iterrows():
             ax.text(
                 row['AFN'],
@@ -482,15 +501,15 @@ def plot_pe_vs_afn_compare(df):
                 ha='left',
                 va='bottom'
             )
-
+    
     ax.set_xlabel('AFN')
     ax.set_ylabel('Force (N)')
-    ax.set_title('Peak Force Comparison: Estimated P_e vs. Actual P_c')
+    ax.set_title(title)
     ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
-
+    
     # Legend for dates (colors)
     date_legend = ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
-
+    
     # Legend for marker meaning
     marker_handles = [
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=8, label='actual'),
@@ -498,129 +517,174 @@ def plot_pe_vs_afn_compare(df):
     ]
     marker_legend = ax.legend(handles=marker_handles, loc='lower right')
     ax.add_artist(date_legend)
-
+    
     plt.tight_layout()
     plt.show()
+    
+    return None
 
-def plot_column_over_time(df, column_name, df_info=None):
+def plot_column_over_afn(parquet_path, title=None):
     """
-    Plot a specified column value over AFN.
+    Interactive plot of any column value over AFN with dropdown selection.
     - Colors encode measurement date (layout palette).
     - No outlines on scatter points.
     - AFN labels shown next to points.
     - Excludes AFNs below 100.
+    - Dropdown to select which column to plot (y-axis).
     
     Parameters:
     -----------
-    df : pd.DataFrame
-        DataFrame containing the data
-    column_name : str
-        Name of the column to plot (e.g., 'F_dot', 'P_e', 'k', etc.)
-    df_info : pd.DataFrame, optional
-        Info DataFrame containing units metadata (from _info.parquet file).
-        If provided, unit will be extracted and added to y-axis label.
+    parquet_path : str
+        Path to Parquet data file (e.g., "path/to/M3DC_raw.parquet")
+    title : str, optional
+        Title for the plot (default: uses column name)
     """
+    import os
+    
+    # Load data from Parquet file
+    try:
+        df = pd.read_parquet(parquet_path, engine='fastparquet')
+        print(f"Loaded data from Parquet: {parquet_path}")
+    except Exception as e:
+        print(f"Error loading Parquet file {parquet_path}: {e}")
+        return None
+    
     if df.empty:
         print("DataFrame is empty.")
-        return
-
-    required = {'AFN', 'date', column_name}
-    if not required.issubset(df.columns):
-        missing = ', '.join(required - set(df.columns))
-        print(f"Missing required columns: {missing}")
-        return
-
-    # Check if phi column exists (optional)
-    has_phi = 'phi' in df.columns
+        return None
     
-    # Select columns for plotting (include phi if available)
-    plot_columns = ['AFN', 'date', column_name]
-    if has_phi:
-        plot_columns.append('phi')
-    
-    plot_data = df[plot_columns].dropna(subset=['AFN', 'date', column_name])
-    if plot_data.empty:
-        print(f"No rows with non-null AFN, date, and {column_name}.")
-        return
-
-    # Filter out AFNs below 100
-    plot_data = plot_data[plot_data['AFN'] >= 100].copy()
-    if plot_data.empty:
-        print(f"No AFNs >= 100 found with valid {column_name} values.")
-        return
-
-    plot_data['date'] = pd.to_datetime(plot_data['date'], errors='coerce')
-    plot_data = plot_data.dropna(subset=['date', column_name])
-    if plot_data.empty:
-        print(f"No valid {column_name} values found.")
-        return
-
-    palette = [
-        lo.COLORS['red'],
-        lo.COLORS['orange'],
-        lo.COLORS['gold'],
-        lo.COLORS['blue'],
-        lo.COLORS['lightblue'],
-        lo.COLORS['indigo'],
-    ]
-
-    unique_dates = plot_data['date'].sort_values().unique()
-    color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
-
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
-
-    for date in unique_dates:
-        subset = plot_data[plot_data['date'] == date].copy()
-        
-        color = color_map[date]
-        date_label = date.strftime('%Y-%m-%d')
-
-        # Plot points without any outlines
-        ax.scatter(
-            subset['AFN'],
-            subset[column_name],
-            c=color,
-            marker='o',
-            alpha=0.9,
-            edgecolors='none',  # No outlines - hardcoded
-            s=60,  # Marker size
-            label=date_label
-        )
-
-        # Add AFN labels next to points
-        for _, row in subset.iterrows():
-            ax.text(
-                row['AFN'],
-                row[column_name],
-                f" {int(row['AFN'])}",
-                fontsize=8,
-                color='black',
-                ha='left',
-                va='center'
-            )
-
-    # Extract unit from info DataFrame if available
-    ylabel = column_name
-    if df_info is not None:
+    # Auto-detect info parquet path
+    info_path = parquet_path.replace('.parquet', '_info.parquet')
+    df_info = None
+    if os.path.exists(info_path):
         try:
-            # Find the row in info DataFrame where Abreviation matches column_name
-            unit_row = df_info[df_info['Abreviation'] == column_name]
-            if not unit_row.empty:
-                unit = unit_row.iloc[0]['Units']
-                # Only add unit if it's not None/NaN/empty
-                if pd.notna(unit) and str(unit).strip() != '' and str(unit).lower() != 'none':
-                    ylabel = f'{column_name} ({unit})'
+            df_info = pd.read_parquet(info_path, engine='fastparquet')
+            print(f"Loaded info from Parquet: {info_path}")
         except Exception as e:
-            # If anything goes wrong, just use column_name without unit
-            pass
+            print(f"Warning: Could not load info file {info_path}: {e}")
     
-    ax.set_xlabel('AFN')
-    ax.set_ylabel(ylabel)
-    ax.set_title(f'{column_name} vs AFN (colored by date)')
-    ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
+    # Check required columns
+    if 'AFN' not in df.columns or 'date' not in df.columns:
+        print("Error: Required columns 'AFN' and 'date' not found in data")
+        return None
     
-    # Legend for dates (colors)
-    ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    plt.tight_layout()
-    plt.show()
+    # Get numeric columns (exclude AFN, date, and list-type columns)
+    exclude_cols = {'AFN', 'date', 'w_data', 'P_data', 'sample_geometry_raw', 'sample_geometry_FEM'}
+    numeric_cols = [col for col in df.columns 
+                   if col not in exclude_cols 
+                   and df[col].dtype in ['int64', 'float64', 'Int64', 'Float64']]
+    
+    if not numeric_cols:
+        print("Error: No numeric columns found to plot")
+        return None
+    
+    # Create column dropdown
+    column_dropdown = Dropdown(
+        options=sorted(numeric_cols),
+        value=numeric_cols[0],
+        description='Column:',
+        continuous_update=False
+    )
+    
+    # Plotting function that will be called when column changes
+    def plot_column(column_name):
+        """Plot column value over AFN for selected column."""
+        if column_name not in df.columns:
+            print(f"Column '{column_name}' not found in data")
+            return
+        
+        # Prepare data
+        plot_data = df[['AFN', 'date', column_name]].dropna(subset=['AFN', 'date', column_name])
+        if plot_data.empty:
+            print(f"No rows with non-null AFN, date, and {column_name}.")
+            return
+        
+        # Filter out AFNs below 100
+        plot_data = plot_data[plot_data['AFN'] >= 100].copy()
+        if plot_data.empty:
+            print(f"No AFNs >= 100 found with valid {column_name} values.")
+            return
+        
+        plot_data['date'] = pd.to_datetime(plot_data['date'], errors='coerce')
+        plot_data = plot_data.dropna(subset=['date', column_name])
+        if plot_data.empty:
+            print(f"No valid {column_name} values found.")
+            return
+        
+        palette = [
+            lo.COLORS['red'],
+            lo.COLORS['orange'],
+            lo.COLORS['gold'],
+            lo.COLORS['blue'],
+            lo.COLORS['lightblue'],
+            lo.COLORS['indigo'],
+        ]
+        
+        unique_dates = plot_data['date'].sort_values().unique()
+        color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
+        
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+        
+        for date in unique_dates:
+            subset = plot_data[plot_data['date'] == date].copy()
+            
+            color = color_map[date]
+            date_label = date.strftime('%Y-%m-%d')
+            
+            # Plot points without any outlines
+            ax.scatter(
+                subset['AFN'],
+                subset[column_name],
+                c=color,
+                marker='o',
+                alpha=0.9,
+                edgecolors='none',  # No outlines - hardcoded
+                s=60,  # Marker size
+                label=date_label
+            )
+            
+            # Add AFN labels next to points
+            for _, row in subset.iterrows():
+                ax.text(
+                    row['AFN'],
+                    row[column_name],
+                    f" {int(row['AFN'])}",
+                    fontsize=8,
+                    color='black',
+                    ha='left',
+                    va='center'
+                )
+        
+        # Extract unit from info DataFrame if available
+        ylabel = column_name
+        if df_info is not None:
+            try:
+                unit_row = df_info[df_info['Abreviation'] == column_name]
+                if not unit_row.empty:
+                    unit = unit_row.iloc[0]['Units']
+                    if pd.notna(unit) and str(unit).strip() != '' and str(unit).lower() != 'none':
+                        ylabel = f'{column_name} ({unit})'
+            except Exception:
+                pass
+        
+        plot_title = title 
+        
+        ax.set_xlabel('AFN')
+        ax.set_ylabel(ylabel)
+        ax.set_title(plot_title)
+        ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
+        
+        # Legend for dates (colors)
+        ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        plt.tight_layout()
+        plt.show()
+    
+    # Connect dropdown to plotting function
+    out = interactive_output(plot_column, {'column_name': column_dropdown})
+    
+    # Display UI
+    controls = VBox([column_dropdown])
+    display(out, controls)
+    
+    return None
