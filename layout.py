@@ -17,9 +17,9 @@ COLORS = {
     'red': '#dc0100',
     'orange': '#fa8200',
     'gold': '#ffcd00',
-    'lightblue': '#000a51',
+    'indigo': '#000a51',
     'blue': '#2588bf',
-    'indigo': '#75d3f2'
+    'lightblue': '#75d3f2'
 }
 
 # RGB equivalents for matplotlib

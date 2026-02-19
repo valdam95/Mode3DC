@@ -1,0 +1,829 @@
+# ============================================================================
+# Cold Regions Science and Technology – Journal Reference & Author Preferences
+# ============================================================================
+#
+# PURPOSE:
+#   Self-contained reference encoding (1) the author's scientific and stylistic
+#   preferences, (2) writing patterns extracted from published papers in the
+#   target journal, and (3) the complete guide-for-authors of Cold Regions
+#   Science and Technology (Elsevier). Designed to be pasted at the beginning
+#   of any LLM conversation involving drafting, reviewing, or editing
+#   manuscript content for this journal.
+#
+# INSTRUCTIONS FOR THE LLM:
+#   Treat every section below as a binding constraint. Whenever you produce or
+#   revise text — abstracts, sections, equations, figure captions, tables,
+#   references, or any other manuscript element — cross-check it against the
+#   rules, patterns, and conventions defined in this document before returning
+#   it to the user. If a request conflicts with these guidelines, flag the
+#   conflict and propose a compliant alternative. Do not silently deviate.
+#
+# SCOPE:
+#   Covers formatting, structure, scientific argumentation style, wording
+#   conventions, figure/table standards, reference formatting, and end-matter
+#   order. Does NOT replace the author's domain expertise; always defer to
+#   the author on scientific content and interpretation.
+# ============================================================================
+
+
+# ============================================================================
+# AUTHOR PREFERENCES & LLM INSTRUCTIONS
+# ============================================================================
+# These preferences override any generic LLM behaviour. Apply them from the
+# very first token of every response.
+
+author_preferences:
+
+  general_interaction_rules:
+    - Give direct, technically dense answers. No hand-wavy explanations.
+    - Provide implementation-ready LaTeX immediately when requested — full equations, not symbolic summaries.
+    - Do not ask unnecessary clarifying questions; infer from context.
+    - Do not split outputs across messages when the user expects a full block.
+    - Do not offer stylistic variations — use strict conformity with the rules below.
+    - Write in English only.
+    - The author works on macOS.
+
+  manuscript_style_and_formatting:
+    units: "Round brackets, e.g. ($\\mathrm{kg\\,m^{-3}}$) — never square brackets for units."
+    value_with_uncertainty: "Always write value ± std with the unit after the pair using siunitx tilde-spacing, e.g. $\\rho_{\\mathrm{slab}} = 308 \\pm 22~\\si{\\kilogram\\per\\cubic\\metre}$. Never separate the value and uncertainty into different unit expressions."
+    physical_symbols: "Proper math mode: italic for variables ($G$, $\\rho$, $K$), upright for subscript labels ($G_{\\mathrm{Ic}}$, $\\rho_{\\mathrm{sub}}$, $K_{\\mathrm{II}}$)."
+    subscript_indices: "Labels (not running indices) must be in \\mathrm{}, e.g. $G_{\\mathrm{IIc}}$, $\\sigma_{\\mathrm{n}}$."
+    custom_macros: "Use the author's custom macros consistently for fracture-mode notation."
+    document_class: "Elsevier elsarticle document class conventions for Cold Regions Science and Technology."
+    layout: "Single-column layout for Word; single- or double-column for LaTeX."
+    discussion_sections: "Science-forward, concise, strong outcome emphasis. No verbose padding."
+    language: "Journal-ready quality — precise, mechanically grounded, no generic phrasing."
+    sentence_rule: "Two precise sentences are always better than one convoluted one."
+    english_variant: "Use American English consistently: color (not colour), neighbor (not neighbour), visualize (not visualise), center (not centre), meter (not metre, for the unit use \\metre in siunitx which renders correctly)."
+    weak_layer_spelling: "Write 'weak layer' (two words, no hyphen) — never 'weak-layer'."
+    figure_references: "Use Fig.~\\ref{fig:label} style; for sub-panels use e.g. Fig.~\\ref{fig:panel1}d."
+    appendix_numbering: "A, B, etc.; equations as Eq.~(A.1); figures as Fig.~A.1; tables as Table~A.1."
+
+  figures_and_plots:
+    - "Clean serif font style, LaTeX-rendered labels."
+    - "Consistent line widths and marker conventions across all figures."
+    - "Color-coded confidence/prediction bands — clearly distinguish confidence bands from prediction bands."
+    - "Correct relative scaling in normalised spaces (e.g. G_I/G_Ic vs G_II/G_IIc)."
+    - "Explicit mapping between normalised and absolute spaces when both are shown."
+    - "Professional labelling — no casual or ambiguous axis titles."
+
+  tables:
+    symbols: "Math mode inside tables."
+    units: "Round brackets in column headers, e.g. $\\rho$ ($\\mathrm{kg\\,m^{-3}}$)."
+    layout: "No vertical rules, no shading (consistent with Elsevier style)."
+
+  scientific_argumentation_fracture_mechanics:
+    energy_over_stress: "Always prefer energy release rate (ERR) formulations over stress-based explanations. The author's specialty is the ERR formulation."
+    mixed_mode: "Provide clear transfer between K_I/K_II and G_I/G_II spaces."
+    asymmetry: "Mixed-mode asymmetry must be emphasised."
+    geometry_independence: "Never use geometry-dependent interpretations where geometry-independent reasoning is possible."
+    femu_err: "FEMU + ERR combination is a key methodological strength — highlight it."
+    in_situ: "In-situ representativeness of experiments is central to the narrative."
+    radial_coordinate: "r = sqrt((G_I/G_Ic)^2 + (G_II/G_IIc)^2) defines the interaction space."
+    quadratic_law: "Quadratic interaction law must be motivated mechanically, not just historically."
+    density_scaling: "Do not interpret density scaling as intrinsic material scaling without careful discussion."
+    criteria_mixing: "Do not mix stress-based and energy-based criteria conceptually without explicit justification."
+    weak_layer_fracture: "Fracture in weak layers differs fundamentally from classical tensile cracks — state where relevant."
+    density_types: "Clearly differentiate between measured density (density cutter) and CT-derived density."
+    properties_vs_effects: "Distinguish intrinsic material properties from structural/geometric effects."
+    displacement_controlled: "All experiments are displacement-controlled — mention explicitly when relevant."
+
+  t_stress_and_gmts:
+    introduction: "Give a simple mechanical explanation first (non-singular stress parallel to the crack plane)."
+    separation: "Clearly separate singular terms (K-field) from non-singular terms (T-stress) when discussing MTS vs GMTS."
+    sensitivity: "Sensitivity discussions should be in compact math-mode form."
+    precision: "Avoid vague statements like 'improves prediction' — be quantitatively precise."
+
+  writing_tone:
+    - "Frame findings as strong results, not limitations."
+    - "Never phrase a finding weakly when the data supports a clear statement."
+    - "Avoid parenthetical asides like '(anticracks)' — integrate terminology cleanly."
+    - "Do NOT use em-dashes for parenthetical insertions (-- bla bla --). Use commas instead (, bla bla,)."
+    - "Avoid ambiguous density statements; always specify which density is meant."
+    - "Science-forward: lead with the physical insight, then support with data/method."
+    - "Do NOT use the word 'yielding' — replace with 'giving', 'producing', 'resulting in', or rephrase entirely."
+
+  meta_pattern:
+    rejects: "Imprecision, stylistic inconsistency, geometry-dependent interpretation, stress-only framing, and journal-noncompliant formatting."
+    demands: "Mechanically rigorous, ERR-centred, geometry-robust, journal-ready, mathematically clean presentation."
+
+
+# ============================================================================
+# AUTHOR'S WRITING VOICE (extracted from published manuscripts)
+# ============================================================================
+# Patterns extracted from two completed manuscripts by the same author:
+# - Mixed-mode fracture of porous, bonded snow (Engineering Fracture Mechanics, 2026)
+# - Current mode III draft (Cold Regions Science and Technology)
+# Any LLM-generated text MUST replicate these patterns to sound like the author.
+
+author_writing_voice:
+
+  sentence_architecture:
+    length: "Alternates between short declarative statements and longer, syntactically precise compound sentences. Two short sentences always preferred over one convoluted one."
+    topic_sentences: |
+      Lead with the physical insight, then attach the supporting evidence or reference.
+      ✅ "Fracture toughness values span \\num{2.0}–\\SI{6.6}{kPa\\,m^{1/2}}, with critical mode~\\II values slightly lower than those in mode~\\I."
+      ❌ "We found that fracture toughness values, which ranged from 2 to 6.6 kPa√m, showed that mode II was slightly lower."
+    qualification: "Precise, never vague: 'slightly lower', 'approximately two orders of magnitude', 'comparatively weak', 'marginally negative'."
+    parenthetical: "Kept minimal. Inline definitions use apposition or commas, not parentheses: 'the non-singular T-stress, representing a uniform crack-parallel stress acting at the crack tip, has been shown to...'"
+
+  paragraph_construction:
+    opening: "States the finding or claim directly."
+    body: "Evidence, comparison, or mechanistic interpretation."
+    closing: "Implication, caveat, or bridge to the next paragraph."
+    length: "Rarely exceeds 8–10 sentences. Most are 4–7 sentences."
+
+  section_opening_summaries: |
+    Each major section (Methods, Results, etc.) starts with a 1–2 sentence roadmap paragraph:
+    "This section describes the materials, field setup, and measurement workflow used to generate the experimental dataset."
+    "This section presents and interprets the experimental and numerical results."
+
+  results_subsection_titles: |
+    Titles are findings-based, not topic-based:
+    ✅ "Fracture direction prediction improves when non-singular stress is included"
+    ✅ "Stress-based criteria describes mixed-mode fracture interaction"
+    ✅ "Microstructure controls fracture toughness"
+    ✅ "Model updating enables reverse identification of elastic properties"
+    ❌ "Fracture direction analysis" / "Discussion of T-stress effects"
+
+  voice_and_pronouns:
+    we: "Used sparingly, only for actions the authors actively performed: 'We show that...', 'Here, we examine whether...', 'we adapt...'"
+    this_study: "'This study' / 'The present study' is the default subject for method descriptions and scope statements."
+    passive: "Used naturally for experimental procedures: 'Samples were extracted...', 'Fracture parameters were obtained...'"
+    never: "Never uses 'I' or 'the authors'."
+
+  transitions_and_connectors: |
+    Avoids generic connectors ("Furthermore", "Moreover", "Additionally"). Transitions are built from the content:
+    "This interpretation aligns with..."
+    "Accordingly, the present study employs..."
+    "The pronounced difference in fracture-path curvature... can be attributed to..."
+    "In contrast, the VS3PB configuration develops..."
+    "While the formulation of Rosendahl (2022) describes..., Rheinschmidt (2025) extended the approach to include..."
+
+  introduction_signature_flow:
+    - "Broad relevance (1–3 sentences): link to real-world significance, quantitative if possible."
+    - "Narrow to the specific problem (1 paragraph): what aspects are studied, why they matter."
+    - "Literature landscape (1–2 paragraphs): each cited study gets a specific factual statement of what it did and what it left open. Constructive critique, never dismissive."
+    - "Gap statement (explicit, concise): often begins with 'However', 'Yet', or 'Despite'."
+    - "'Here, we...' paragraph: states what the paper does, with numbered aims (i), (ii), (iii) and closes with the contribution framing."
+    constructive_critique_example: |
+      ✅ "...however, no experimental configuration has yet enabled a consistent characterization of the full mixed-mode interaction regime."
+      ❌ "Previous studies failed to characterize..."
+
+  conclusions_signature_flow:
+    opening_summary: "2–3 sentences: restate problem + approach."
+    bulleted_findings: |
+      Each bullet is a self-contained mechanistic result, not a section recap:
+      ✅ "We successfully introduce two experimental configurations that enable controlled investigation of mixed-mode \\I/\\II fracture in bonded snow."
+      ❌ "Two experimental configurations were described in Section 2."
+    closing: "Broader applicability, never a weak limitation."
+
+  inline_limitations: |
+    Limitations are stated immediately after the relevant result, factually and without apology:
+    "Notably, this study uses thaw settlement as a first-order proxy for IRI-based serviceability, which does not explicitly capture vehicle response..."
+    "The quantitative influence of these size effects on the absolute fracture resistance is not assessed here, as this would require a systematic variation of specimen size..."
+    "Direct validation of thaw settlement predictions is limited by the lack of long-term settlement monitoring data..."
+
+  equations:
+    embedding: "Embedded within a sentence with proper punctuation (comma or period after the display equation when grammatically required)."
+    grouping: "Multiple related equations grouped with \\left\\{ \\begin{aligned} ... \\end{aligned} \\right. and a single equation number."
+    conditions: "\\qquad \\text{with} \\quad ... used to attach conditions inline within a display equation."
+
+  figure_captions:
+    structure:
+      - "What the figure shows (object)."
+      - "What each panel shows — explicit (a), (b), (c) descriptions."
+      - "Axis/color interpretation if non-obvious."
+      - "Quantitative context embedded where possible (e.g., median values, bin sizes, fitting parameters)."
+    example: |
+      "Finite element model updating workflow and results. (a) The critical fracture load $P_\\mathrm{c}$ is identified
+      from the experimental force–displacement response... (b) From the initial 211 DIC-derived displacement fields,
+      21 cases did not converge. For fitting the density parametrisation law, an additional two-step filtering was
+      applied, removing datapoints with $R^2 < 0.5$ and uncertainty $> 5\\%$..."
+
+  table_design:
+    header_row: "Highlighted with \\rowcolor{orange15} (light orange tint)."
+    units: "In parentheses below the symbol: two-row headers with \\rule for vertical spacing."
+    rules: "\\specialrule{0.5pt}{0pt}{0pt} top and bottom (no \\hline)."
+    body: "No vertical rules, no cell shading in the body."
+    footnotes: "\\textsuperscript{a} keyed to the header or body."
+    alignment: "Data columns use \\centering\\arraybackslash for numeric alignment."
+
+  nomenclature: |
+    Dedicated Nomenclature block on page 2 (for EFM conventions), structured as:
+    1. Latin characters (alphabetical: lowercase then uppercase)
+    2. Greek characters (alphabetical)
+    3. Abbreviations
+    Each entry: $symbol$  & definition \\
+
+  appendix_conventions:
+    content: "Full methodological sections, not afterthoughts. They contain equations, figures, and tables."
+    titles: "Descriptive: 'Closed-form solution and quality metrics for FEMU', 'Extraction of fracture path characteristics', 'Sensitivity of critical distance'."
+    numbering: "Fig.~A.1, Eq.~(A.1)."
+
+
+# ============================================================================
+# REFERENCE PAPER — Engineering Fracture Mechanics (Author's Companion Paper)
+# ============================================================================
+# This paper is the author's companion work and shares the same experimental
+# apparatus, motor unit, and analysis pipeline. Content from this paper may
+# be referenced or adapted for the current manuscript.
+
+reference_paper_efm:
+  title: "Mixed-mode fracture of porous, bonded snow"
+  journal: "Engineering Fracture Mechanics (Elsevier)"
+  document_class: "\\documentclass[final,3p,times]{elsarticle}"
+  bibliography_style: "elsarticle-num (numbered)"
+  status: "Complete / submitted"
+  dataset_doi: "https://doi.org/10.5281/zenodo.18642960"
+  code_repository: "https://github.com/valdam95/NotchedBeam"
+
+  covers:
+    - "Mixed-mode I/II fracture of bonded snow (not weak layers) using VS3PB and ON4PB bending configurations"
+    - "FEMU-based identification of effective Young's modulus from DIC displacement fields"
+    - "MTS and GMTS fracture criteria with T-stress analysis"
+    - "Density-based scaling of E_eff with exponent gamma = 5.28 ± 0.05"
+    - "Elliptic ERR interaction law in (G_I, G_II) space"
+    - "µCT-based microstructural correlation with fracture toughness"
+    - "223 experiments (RG1: 89, RG2: 53, FC1: 39, FC2: 42)"
+
+  additional_macros: |
+    % Stress intensity factors
+    \newcommand{\Kc}{\ensuremath{K_\mathrm{c}}\xspace}
+    \newcommand{\KI}{\ensuremath{K_\mathrm{\I}}\xspace}
+    \newcommand{\KII}{\ensuremath{K_\mathrm{\II}}\xspace}
+    \newcommand{\KIc}{\ensuremath{K_{\I\mathrm{c}}}\xspace}
+    \newcommand{\KIIc}{\ensuremath{K_{\II\mathrm{c}}\xspace}}
+    \newcommand{\KPA}{\si{\kilo\pascal\metre^{1/2}}}
+    \newcommand{\MPA}{\si{\mega\pascal\metre^{1/2}}}
+    % Linear algebra
+    \newcommand{\transpose}{^\intercal}
+    \renewcommand{\vec}[1]{\bm{#1}}
+    \newcommand{\mat}[1]{\bm{#1}}
+    % Differential and critical crack length
+    \newcommand{\dd}{\mathrm{d}}
+    \newcommand{\ac}{\ensuremath{a_\mathrm{c}}\xspace}
+
+  custom_colors: |
+    \definecolor{indigo}{HTML}{8319D7}
+    \definecolor{lightpurple}{HTML}{AF87D9}
+    \definecolor{darkred}{HTML}{C54325}
+    \definecolor{orange}{HTML}{F58C00}
+    \definecolor{yellowgreen}{HTML}{A2B673}
+    \definecolor{magenta}{HTML}{AC2E85}
+    \definecolor{pink}{HTML}{FF9CF5}
+    \definecolor{gold}{HTML}{FAC900}
+    \definecolor{yellow}{HTML}{FFE500}
+    \definecolor{orangebase}{HTML}{F58C00}
+    \colorlet{orange15}{orangebase!15}   % used for table header row tinting
+
+  key_results:
+    - grain_type: RG1
+      K_Ic: "3.9 ± 0.9 kPa·m^{1/2}"
+      K_IIc: "2.9 ± 1.9 kPa·m^{1/2}"
+      G_Ic: "0.70 ± 0.07 J/m²"
+      G_IIc: "0.33 ± 0.08 J/m²"
+      E_eff: "14.4 ± 0.8 MPa"
+      r_c: "7.2 ± 3.7 mm"
+      rho_bar: "287 kg/m³"
+    - grain_type: RG2
+      K_Ic: "6.0 ± 0.6 kPa·m^{1/2}"
+      K_IIc: "6.0 ± 0.6 kPa·m^{1/2}"
+      G_Ic: "0.83 ± 0.15 J/m²"
+      G_IIc: "0.55 ± 0.11 J/m²"
+      E_eff: "33.7 ± 1.7 MPa"
+      r_c: "5.6 ± 1.4 mm"
+      rho_bar: "339 kg/m³"
+    - grain_type: FC1
+      K_Ic: "3.3 ± 0.3 kPa·m^{1/2}"
+      K_IIc: "2.2 ± 0.2 kPa·m^{1/2}"
+      G_Ic: "0.32 ± 0.04 J/m²"
+      G_IIc: "0.08 ± 0.01 J/m²"
+      E_eff: "29.9 ± 1.5 MPa"
+      r_c: "2.0 ± 0.4 mm"
+      rho_bar: "331 kg/m³"
+    - grain_type: FC2
+      K_Ic: "5.2 ± 0.8 kPa·m^{1/2}"
+      K_IIc: "3.6 ± 0.9 kPa·m^{1/2}"
+      G_Ic: "0.52 ± 0.06 J/m²"
+      G_IIc: "0.16 ± 0.02 J/m²"
+      E_eff: "56.3 ± 2.5 MPa"
+      r_c: "2.1 ± 0.7 mm"
+      rho_bar: "373 kg/m³"
+
+
+# ============================================================================
+# CURRENT MANUSCRIPT — PROJECT CONTEXT
+# ============================================================================
+
+current_manuscript:
+
+  paper_identity:
+    title: "Influence of mode III contribution on the fracture toughness of weak snow layers"
+    target_journal: "Cold Regions Science and Technology (Elsevier)"
+    document_class: "\\documentclass[final,3p,times]{elsarticle}  # single-column, Times serif"
+    bibliography_style: "elsarticle-harv (author-year / Harvard)"
+    status: "Early draft — some sections are unproofed AI text (marked red), some are ideas (marked blue), black text is review-ready."
+
+  authors:
+    - name: "Valentin Adam"
+      affiliations: ["TU Darmstadt (ISMD)", "WSL/SLF Davos"]
+    - name: "Florian Rheinschmidt"
+      affiliations: ["TU Darmstadt (ISMD)", "University of Rostock"]
+    - name: "Jakob Schoettner"
+      affiliations: ["WSL/SLF Davos"]
+    - name: "Melin Dominique Erin Walet"
+      affiliations: ["WSL/SLF Davos"]
+    - name: "Philipp Weißgraeber"
+      affiliations: ["University of Rostock"]
+    - name: "Alec van Herwijnen"
+      affiliations: ["WSL/SLF Davos"]
+    - name: "Philipp Lorens Rosendahl"
+      affiliations: ["TU Darmstadt (ISMD)"]
+      role: "Corresponding author"
+
+  affiliations:
+    - id: 1
+      organization: "Institute of Structural Mechanics and Design, Department of Civil and Environmental Engineering, Technical University of Darmstadt"
+      address: "Franziska-Braun-Str. 3, Darmstadt 64285, Germany"
+    - id: 2
+      organization: "WSL Institute for Snow and Avalanche Research SLF"
+      address: "Flüelastr. 11, Davos 7260, Switzerland"
+    - id: 3
+      organization: "Faculty of Mechanical Engineering and Marine Technology, University of Rostock"
+      address: "Albert-Einstein-Str. 2, Rostock 18059, Germany"
+
+  latex_preamble_custom_macros:
+    description: "When generating LaTeX for this manuscript, ALWAYS use these macros instead of raw math."
+    macros: |
+      % Fracture mode labels (kerned Roman numerals)
+      \newcommand{\I}{\ensuremath{\mathrm{I}}\xspace}
+      \newcommand{\II}{\ensuremath{\mathrm{I\mkern-1mu I}}\xspace}
+      \newcommand{\III}{\ensuremath{\mathrm{I\mkern-1mu I\mkern-1mu I}}\xspace}
+      % Energy release rate (calligraphic G)
+      \newcommand{\Gdif}{\ensuremath{\mathcal{G}}\xspace}
+      % Critical / mode-specific ERR
+      \newcommand{\Gc}{\ensuremath{\Gdif_\mathrm{c}}\xspace}
+      \newcommand{\GdifI}{\ensuremath{\Gdif_\I}\xspace}
+      \newcommand{\GdifII}{\ensuremath{\Gdif_\II}\xspace}
+      \newcommand{\GIc}{\ensuremath{\Gdif_{\I\mathrm{c}}}\xspace}
+      \newcommand{\GIIc}{\ensuremath{\Gdif_{\II\mathrm{c}}}\xspace}
+    usage_rules:
+      - "Write mode~\\III not mode III or mode~$\\mathrm{III}$."
+      - "Write \\GIc not $\\mathcal{G}_{\\mathrm{Ic}}$."
+      - "Write \\Gdif not $\\mathcal{G}$ or $G$ for the energy release rate."
+      - "The ERR symbol is calligraphic G (\\mathcal{G}), NOT italic G."
+      - "\\GIIIc is not yet defined — if needed, define it as \\ensuremath{\\Gdif_{\\III\\mathrm{c}}}\\xspace."
+
+  key_packages_and_crossreferencing:
+    siunitx: |
+      \usepackage{siunitx}
+      \sisetup{
+          separate-uncertainty = true,
+          uncertainty-mode     = separate,
+          bracket-numbers      = false
+      }
+    booktabs: "\\usepackage{booktabs}  % clean table rules"
+    hyperref: "\\usepackage[hidelinks]{hyperref}"
+    cleveref: |
+      \usepackage{cleveref}
+      \crefname{figure}{Fig.}{Figs.}
+      \crefname{table}{Table}{Tables}
+      \crefname{equation}{Eq.}{Eqs.}
+    crossref_convention: "Use \\cref{} (cleveref) everywhere. Automatically produces Fig.~1, Table~2, Eq.~(3). Do NOT write \\ref{} with manual prefixes."
+    units_convention: |
+      Use \SI{}{} and \SIrange{}{}{} from siunitx.
+      Examples:
+        \SI{2380}{\metre}, \SI{26.8}{\degree}, \SIrange{0.75}{8.5}{\milli\metre\per\second}
+        Density: \SI{308 \pm 22}{\kilogram\per\cubic\metre} (siunitx handles \pm via separate-uncertainty).
+
+  current_section_structure:
+    - section: "1. Introduction"
+      status: "draft — red/unproofed AI text"
+    - section: "2. Material and Methods"
+      subsections:
+        - "2.1 Fieldsite and snow properties [draft — partially written]"
+        - "2.2 Displacement-controlled mode III weak layer fracture tests [placeholder]"
+        - "2.3 Analytical model for mixed-mode I/II/III fracture analysis [draft — partially written]"
+    - section: "3. Results and discussion"
+      status: "placeholder — envelope figure idea"
+    - section: "4. Conclusion"
+      status: "empty"
+    - section: "Appendix A: Motor unit specifications"
+      status: "draft — mostly written"
+
+  abstract_summary:
+    structure: "Five-part: context → method → dataset → key results → significance"
+    word_count: "~180 words"
+    key_claims:
+      - "Mode III loading (cross-slope, out-of-plane) has received little attention."
+      - "76 displacement-controlled tests on snow beams with pre-cut weak layer."
+      - "Analytical variational model based on minimum potential energy decomposes ERR by mode."
+      - "Mode III significantly affects critical fracture toughness and anticrack onset."
+      - "Out-of-plane loading cannot be neglected for shallow-slab configurations."
+
+  scientific_core:
+    experiment: "Displacement-controlled out-of-plane loading of snow beams resting on a pre-cut weak layer (bedded surface hoar). 76 tests across 10 field rows on Strela Mountain, Davos."
+    model: "Closed-form analytical weak-interface model (Rosendahl 2022, extended by Rheinschmidt 2025). Variational LEFM, principle of minimum potential energy. Slab = elastic plate (FSDT), weak layer = isotropic elastic interface. Provides ERR decomposition into modes I, II, III."
+    results: "Pure mode III fracture toughness G_IIIc; interaction with mixed-mode I/II; implications for shallow slabs where cross-slope shear dominates."
+    novelty: "First dedicated experimental quantification of mode III fracture toughness in weak snow layers; first mode I/III interaction envelope."
+
+  key_experimental_details:
+    location: "Steintäli, Strela Mountain, 2380 m, Davos, Switzerland (46.81°N, 9.79°E)"
+    slope: "~27° north-west facing"
+    weak_layer: "Bedded surface hoar (SH) at ~113 cm height"
+    slab_density_field: "Measured as rho_1–rho_4, combined mean ~308 kg/m³"
+    slab_density_uCT: "308 ± 22 kg/m³"
+    substratum_density_uCT: "312 ± 14 kg/m³"
+    weak_layer_density_uCT: "138.3 kg/m³"
+    weak_layer_SSA: 10.7
+    weak_layer_thickness: "~4.5 mm"
+    motor_unit: "Modified SnowMicroPen (SMP5) architecture, Maxon EC motor with 246:1 gearbox, Kistler 9313AA1 piezoelectric load cell"
+    shear_speeds: "0.75–8.5 mm/s, displacement-controlled"
+    sampling_frequency: "~2000–2500 Hz"
+    number_of_tests: 76
+
+  key_references:
+    - cite: "Heierli et al. (2008, 2011)"
+      provides: "ERR-based anticrack framework for weak layers"
+    - cite: "Rosendahl (2022)"
+      provides: "Analytical weak-interface model (variational, modes I/II)"
+    - cite: "Rheinschmidt et al. (2023) / Rheinschmidt (2025)"
+      provides: "Extension to mode III, CPST model"
+    - cite: "Adam et al. (2023)"
+      provides: "Classical PST not strongly affected by mode II"
+    - cite: "Weißgraeber and Rosendahl (2023)"
+      provides: "Modified PST for controlled mode mixity"
+    - cite: "Griffith (1921)"
+      provides: "Energetic fracture criterion"
+    - cite: "Fyffe et al. (2007)"
+      provides: "Early mode I/II/III setups for cohesive snow"
+    - cite: "van Herwijnen and Jamieson (2005)"
+      provides: "Propagation saw test (PST)"
+    - cite: "Gauthier and Jamieson (2006)"
+      provides: "PST methodology"
+    - cite: "Sigrist et al. (2006)"
+      provides: "PST fracture toughness"
+    - cite: "Knoff (2014)"
+      provides: "Cross-slope PST (CPST) concept"
+    - cite: "Trottet et al. (2022)"
+      provides: "Numerical study on out-of-plane bending in cross-slope propagation"
+    - cite: "Simenhois et al. (2023)"
+      provides: "Cross-slope vs. slope-parallel crack speeds"
+    - cite: "Fierz et al. (2009)"
+      provides: "International snow classification"
+
+
+# ============================================================================
+# JOURNAL WRITING PATTERNS (extracted from published papers)
+# ============================================================================
+# Conventions extracted from three recent Cold Regions Science and Technology
+# papers spanning permafrost engineering, asphalt fracture mechanics, and
+# granular-flow DEM simulation. Use these patterns whenever drafting or
+# revising manuscript text for this journal.
+
+journal_writing_patterns:
+
+  overall_section_architecture:
+    pattern_A:
+      name: "Method-development + Case study (most common)"
+      structure:
+        - "1. Introduction"
+        - "2. Methodology / Framework development (deep subsections 2.1–2.N)"
+        - "3. Case study / Application (3.1 Background, 3.2 Study sites, 3.3 Parameters, 3.4 Results and discussion)"
+        - "4. Conclusions"
+    pattern_B:
+      name: "Experimental + Modelling"
+      structure:
+        - "1. Introduction"
+        - "2. Materials and experiment (2.1 Materials, 2.2 Experimental design, 2.3 Test procedure)"
+        - "3. Modelling framework (3.1 FE setup, 3.2 Input parameters)"
+        - "4. Results and discussion (subsections by phenomenon, not by figure)"
+        - "5. Conclusions"
+    pattern_C:
+      name: "Simulation-heavy"
+      structure:
+        - "1. Introduction"
+        - "2. Numerical model (governing equations, calibration, validation)"
+        - "3. Results (subsections by physical quantity or phenomenon)"
+        - "4. Discussion (4.1 Stress analysis, 4.2 Comparison with existing models, 4.3 Limitations)"
+        - "5. Conclusions"
+    key_observations:
+      - "Results and Discussion are often combined, with subsections by topic."
+      - "When separated, Discussion addresses physical interpretation, comparison with literature, and limitations."
+      - "A dedicated limitations paragraph or subsection is standard."
+      - "Subsection depth goes to three levels (e.g. 3.3.1) but rarely four."
+
+  abstract:
+    length: "80–150 words typically; max 250 per journal rules. Concise and dense."
+    five_part_flow:
+      - context: "State the real-world problem or gap (1 sentence)."
+      - method: "Name the tool/approach and what it does (1–2 sentences)."
+      - application: "Where/how it was applied (1 sentence)."
+      - key_results: "Quantitative or specific (1–2 sentences)."
+      - significance: "Framework-level contribution (1 sentence)."
+    wording_conventions:
+      - "No references in the abstract (or minimal, author + year only)."
+      - "No equations."
+      - "Use 'this study' (not 'we' or 'the authors')."
+      - "Active constructions: 'introduces', 'reveals', 'quantifies', 'demonstrates'."
+      - "End with the broader framework or applicability statement."
+
+  highlights:
+    - "Each bullet is a standalone factual statement, not a question or vague claim."
+    - "Use active verbs: 'controls', 'captures', 'defines'."
+    - "Specific enough to differentiate from other papers."
+
+  introduction:
+    typical_length: "3–5 paragraphs"
+    paragraph_flow:
+      - "Broad context (2–4 sentences): Real-world relevance, scale, societal impact. May include quantitative framing."
+      - "State of the art (1–2 paragraphs): Each cited study gets a specific statement of what it did, found, and did not do."
+      - "Gap identification (explicit, often at paragraph boundary)."
+      - "This study (final paragraph): What the paper does, how, and what the key innovation is."
+    wording_conventions:
+      - "Prior work critiqued constructively: 'did not incorporate', 'lacked integration', 'was limited to'."
+      - "Final paragraph uses strong verbs: 'introduces', 'automates', 'addresses key limitations', 'enables'."
+      - "Quantitative context whenever possible."
+
+  methods:
+    detail_level: "Extremely detailed and reproducible. The journal expects applied science."
+    conventions:
+      - "Software and tools named explicitly with versions."
+      - "Every input parameter listed with symbol, unit, distribution type, source/reference."
+      - "Equations numbered sequentially as Eq. (1), Eq. (2). Variables defined immediately after."
+      - "Workflow steps often presented as a numbered list (Step 1–N)."
+      - "Validation/verification subsection comparing model output to measured data before new results."
+      - "Geometry/mesh: specific dimensions, mesh size, boundary conditions, and justification."
+      - "Assumptions and simplifications stated explicitly inline."
+
+  results_and_discussion:
+    organisation: "Subsections by physical phenomenon or analysis type, not by figure number."
+    paragraph_template:
+      - "State what is shown (reference figure/table)."
+      - "Describe key trends quantitatively."
+      - "Compare with literature."
+      - "Interpret physically."
+      - "State implications or caveats."
+    quantitative_density: "Every result paragraph contains specific numbers. Vague statements always accompanied by the actual value."
+    literature_comparison: "Direct, numerical when possible."
+    limitations_inline: "Stated factually, not apologetically. Clarify scope rather than undermine findings."
+
+  discussion_standalone:
+    covers:
+      - "Physical mechanism analysis — deeper interpretation than Results."
+      - "Comparison with established models/theories."
+      - "Dedicated Limitations subsection — honest, specific, forward-looking."
+
+  conclusions:
+    length: "One substantial paragraph + 3–5 bullet points + one closing paragraph."
+    three_part_flow:
+      - "Opening summary (2–4 sentences): Restate problem and what was done."
+      - "Key findings as bullet points or numbered items. Self-contained result statements, quantitative, mechanistic."
+      - "Closing paragraph: Limitations + future work + broader significance."
+    wording_conventions:
+      - "'The following conclusions can be drawn.' or similar."
+      - "Present tense for established findings, past tense for what was done."
+      - "End on applicability and future directions, not on limitations."
+
+  equations_and_symbols:
+    - "Equations numbered sequentially: Eq. (1), Eq. (2), etc."
+    - "Variables defined immediately after the equation block."
+    - "Symbol/abbreviation tables common (placed after keywords or after methods)."
+    - "Greek letters and subscripts in proper math mode throughout."
+    - "Units always stated with each variable definition."
+
+  figures_and_tables_in_text:
+    figures: "Fig. 1, Fig. 2 (abbreviated, capitalised). Sub-panels: Fig. 3(a), Fig. 3(a-b)."
+    tables: "Table 1, Table 2 (not abbreviated)."
+    equations: "Eq. (1), Eqs. (3), (4), (5)."
+    referencing: "Figures and tables referenced before the reader encounters them."
+
+  figure_captions:
+    - "Start with object description."
+    - "Include axis descriptions when helpful."
+    - "End with data source if applicable."
+    - "Sub-panel descriptions: (a) and (b) show...; (c) depicts...; (d) illustrates..."
+
+  table_conventions:
+    headers: "Symbol + unit in parentheses, e.g. 'GMC (%)', 'Fill height (m)'."
+    footnotes: "Below the table for symbol definitions."
+    ranges: "En-dash for data ranges: '1700–2100'."
+
+  end_matter_order:
+    - "1. CRediT authorship contribution statement"
+    - "2. Funding statement"
+    - "3. Declaration of competing interest"
+    - "4. Declaration of generative AI (if applicable)"
+    - "5. Acknowledgments"
+    - "6. Data availability statement"
+    - "7. References"
+
+  verb_and_phrase_inventory:
+    introducing_method: "This study introduces / develops / presents / proposes"
+    stating_results: "Results reveal / show / indicate / demonstrate / confirm"
+    interpreting: "This arises because / This is attributed to / This divergence arises because"
+    comparing_literature: "aligns with / is consistent with / closely matches / corroborates / supports"
+    noting_limitations: "did not incorporate / lacked / is limited by / does not explicitly capture / should be interpreted as"
+    significance: "highlights / underscores / reinforces the need for / provides a framework for"
+    conclusions: "The following conclusions can be drawn / It can be concluded that / It is therefore concluded that"
+    future_work: "Future work should / Future studies should incorporate / warrants further investigation"
+
+
+# ============================================================================
+# JOURNAL IDENTITY & GUIDE FOR AUTHORS
+# ============================================================================
+
+journal_identity:
+  full_name: "Cold Regions Science and Technology"
+  publisher: "Elsevier"
+  type: "International peer-reviewed journal"
+  peer_review: "Single anonymized (minimum two independent reviewers)"
+  article_types:
+    - "Research Articles"
+    - "Review Articles"
+    - "Short Communications"
+
+scope_and_aims:
+  description: |
+    Deals with the science and technical problems of cold environments in both
+    polar regions and more temperate locations. Covers fundamental aspects of
+    cryospheric sciences with applications for cold regions problems, as well
+    as engineering topics related to the cryosphere.
+  core_topics:
+    - "Ice: Physical and mechanical aspects, including glaciers and sea ice"
+    - "Snow: Snow properties, snow avalanches"
+    - "Ice-Water Systems: Interactions between ice and water"
+    - "Frozen Ground: Ice-bonded soils and permafrost"
+    - "Earth Science: Relevant aspects of earth science and materials science"
+    - "Engineering: Offshore and river ice engineering, icing of ships and structures, trafficability"
+    - "Technology: Technological advances for cold regions in research, development, and engineering"
+  emphasis:
+    - "Applied science is emphasized."
+    - "Theoretical papers must include a detailed discussion of potential application to cold regions problems."
+
+editorial_leadership:
+  - area: "Sea ice and arctic marine technology"
+    editors: "Prof. Jukka Tuhkuri"
+  - area: "Snow and snow avalanche"
+    editors: "Dr. Nicolas Eckert & Dr. Betty Sovilla"
+  - area: "Frozen soil, frozen rocks and permafrost"
+    editors: "Prof. Jilin Qi & Prof. Mingyi Zhang"
+  - area: "River ice"
+    editors: "Prof. Mark Loewen"
+  - area: "Atmospheric icing"
+    editors: "Dr. Krzysztof Szilder"
+
+manuscript_preparation:
+  language: "American English (author preference). The journal allows American or British English but not a combination."
+
+  title_page:
+    required: true
+    elements:
+      - "Article title: Concise, informative; avoid abbreviations and formulae unless established"
+      - "Author names: Given and family names; order must match submission system"
+      - "Affiliations: Full postal address including country; lower-case superscript letters"
+      - "Corresponding author: Clearly indicated"
+
+  abstract:
+    max_words: 250
+    requirements:
+      - "Concise and factual"
+      - "Must stand alone"
+      - "Avoid references (if essential, cite author(s) and year(s))"
+      - "Avoid non-standard abbreviations (define at first mention if essential)"
+
+  keywords:
+    count: "1 to 7"
+    language: "English"
+    guidelines:
+      - "Avoid multi-word keywords using 'and' or 'of'"
+      - "Use abbreviations only if firmly established"
+
+  highlights:
+    required: true
+    count: "3 to 5 bullet points"
+    max_characters_per_bullet: 85
+    submission: "Separate editable file with 'highlights' in filename"
+
+  graphical_abstract:
+    encouraged: true
+    dimensions: "531 × 1328 pixels (h × w) or proportionally more; readable at 5 × 13 cm"
+    file_types: ["TIFF", "EPS", "PDF", "MS Office"]
+    ai_restriction: "No generative AI or AI-assisted tools for creation or alteration"
+
+file_format:
+  source_files: "Editable: .doc/.docx for Word, .tex for LaTeX. PDF is NOT acceptable."
+  word_layout: "Single-column"
+  latex_layout: "Single- or double-column permitted"
+  cleanup: "Remove strikethrough and underlined text unless scientifically significant"
+
+figures_and_artwork:
+  resolution:
+    vector_drawings: "EPS or PDF, fonts embedded"
+    halftones: "300 dpi minimum (single column: 1063 px, full page: 2244 px)"
+    bitmapped_line: "1000 dpi minimum (single column: 3543 px, full page: 7480 px)"
+    line_halftone_combo: "500 dpi minimum (single column: 1772 px, full page: 3740 px)"
+  rules:
+    - "Cite all images in manuscript text"
+    - "Number sequentially as they appear"
+    - "Submit each as a separate file (e.g. Figure_1, Figure_2)"
+    - "Each figure must have a caption (brief title + description)"
+    - "No generative AI for creating or altering images (exception: AI as part of research design/methods)"
+
+tables:
+  format: "Editable text, NOT images"
+  rules:
+    - "Cite all tables in manuscript text"
+    - "Number consecutively by appearance"
+    - "Include captions"
+    - "No vertical rules or shading within cells"
+
+references:
+  in_text_citation_style:
+    single_author: "Name (year) — e.g. Allan (2020)"
+    two_authors: "Both names (year) — e.g. Allan and Jones (2019)"
+    three_plus_authors: "First author et al. (year) — e.g. Kramer et al. (2023)"
+    groups: "Alphabetically then chronologically, or vice versa"
+  reference_list:
+    order: "Alphabetically, then chronologically"
+    same_year: "Identified by letters a, b, c after year"
+    journal_abbreviation: "Per LTWA (List of Title Word Abbreviations)"
+    dois: "Recommended"
+  examples:
+    journal_article: "Van der Geer, J., Handgraaf, T., Lupton, R.A., 2020. The art of writing a scientific article. J. Sci. Commun. 163, 51–59. https://doi.org/10.1016/j.sc.2020.00372."
+    journal_article_with_number: "Van der Geer, J., Handgraaf, T., Lupton, R.A., 2022. The art of writing a scientific article. Heliyon. 19, e00205."
+    book: "Strunk Jr., W., White, E.B., 2000. The Elements of Style, fourth ed. Longman, New York."
+    book_chapter: "Mettam, G.R., Adams, L.B., 2023. How to prepare an electronic version of your article, in: Jones, B.S., Smith, R.Z. (Eds.), Introduction to the Electronic Age. E-Publishing Inc., New York, pp. 281–304."
+    website: "Cancer Research UK, 2023. Cancer statistics reports for the UK. http://www.cancerresearchuk.org/... (accessed 13 March 2023)."
+    dataset: "Oguro, M., et al., 2015. Mortality data for Japanese oak wilt disease... [dataset]. Mendeley Data, v1. https://doi.org/10.17632/xwj98nb39r.1."
+    software: "Coon, E., et al., 2020. Advanced Terrestrial Simulator (ATS) v0.88 [software]. Zenodo. https://doi.org/10.5281/zenodo.3727209."
+
+article_structure:
+  required_sections:
+    - "Title page"
+    - "Abstract"
+    - "Keywords"
+    - "Main body (clearly divided with headings)"
+    - "Acknowledgements (separate section, directly before references)"
+    - "Author contributions (CRediT taxonomy)"
+    - "Declaration of competing interests"
+    - "Funding sources"
+    - "Declaration of generative AI use (if applicable)"
+    - "References"
+  credit_roles:
+    - "Conceptualization"
+    - "Data curation"
+    - "Formal analysis"
+    - "Funding acquisition"
+    - "Investigation"
+    - "Methodology"
+    - "Project administration"
+    - "Resources"
+    - "Software"
+    - "Supervision"
+    - "Validation"
+    - "Visualization"
+    - "Writing – original draft"
+    - "Writing – review and editing"
+
+ethics_and_policies:
+  submission_declaration:
+    - "Work not previously published (except preprint, abstract, thesis, registered report)"
+    - "Not under consideration elsewhere"
+    - "Approved by all authors and responsible authorities"
+    - "If accepted, will not be published elsewhere without copyright-holder consent"
+  authorship:
+    requirements:
+      - "Conception/design of the study, or data acquisition, or analysis/interpretation"
+      - "Drafting the article or critically revising it"
+      - "Final approval of the submitted version"
+  competing_interests: "All authors must disclose financial and personal relationships that could bias their work."
+  funding_statement_format: "Funding: This work was supported by the [Funder Name] [grant numbers xxxx, yyyy]."
+  no_funding_statement: "This research did not receive any specific grant from funding agencies in the public, commercial, or not-for-profit sectors."
+  generative_ai_declaration: |
+    If AI tools were used, add before references:
+    "Declaration of generative AI and AI-assisted technologies in the manuscript preparation process.
+    During the preparation of this work the author(s) used [NAME OF TOOL / SERVICE] in order to [REASON].
+    After using this tool/service, the author(s) reviewed and edited the content as needed and take(s)
+    full responsibility for the content of the published article."
+  research_data: "Option C: Deposit data in repository, cite and link in article, or state why not possible."
+  maps:
+    - "Show only the area actually studied."
+    - "Include note: 'map lines delineate study areas and do not necessarily depict accepted national boundaries'."
+  inclusive_language:
+    - "Acknowledge diversity, convey respect, promote equal opportunities."
+    - "Avoid descriptors about personal attributes unless relevant."
+    - "Write for gender neutrality."
+
+submission_process:
+  method: "Online submission system (converts files to single PDF for review)"
+  correspondence: "All via email"
+  proof_corrections: "Required within 2 days"
+  significant_changes: "Require editor approval at proof stage"
+  share_link: "50 days free access for corresponding author (not for open access articles)"
+
+preprints:
+  sharing: "Authors may share preprints (does not count as prior publication)"
+  ssrn: "Free preprint posting on SSRN available during submission"
+  doi: "Preprint receives a DOI and links to version of record if published"

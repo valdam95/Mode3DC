@@ -7,6 +7,7 @@ Cross-platform server path management for team data access.
 import os
 import platform
 import pandas as pd
+import numpy as np
 import datetime
 import glob
 import re
@@ -1621,3 +1622,191 @@ def apply_rotation_correction(frames_folder_path: str, master_parquet_path: str,
         print(f"Completed AFN {afn}: {successful_images}/{len(image_files)} images rotated in {elapsed:.1f}s ({rate:.1f} img/s)")
     
     print("\nRotation correction complete!")
+
+
+# ============================================================================
+# GENERAL STATISTICS DISPLAY
+# ============================================================================
+
+def display_gen_stats(parquet_path_masters, parquet_path_info):
+    """
+    Display general statistics of the master dataset.
+    
+    Currently shows mean and standard deviation for slab density measurements
+    (rho_1 … rho_4, combined slab, and rho_sub).
+    
+    Parameters
+    ----------
+    parquet_path_masters : str
+        Path to the master data Parquet file (e.g. M3DC_raw.parquet)
+        containing at least the columns rho_1, rho_2, rho_3, rho_4, and rho_sub.
+    parquet_path_info : str
+        Path to the master metadata Parquet file (e.g. M3DC_raw_info.parquet)
+        with columns 'Abreviation' and 'Units'.
+    """
+
+    # --- load data -------------------------------------------------------
+    try:
+        masters = pd.read_parquet(parquet_path_masters, engine='fastparquet')
+    except Exception as e:
+        print(f"Error loading master data: {e}")
+        return
+    try:
+        masters_info = pd.read_parquet(parquet_path_info, engine='fastparquet')
+    except Exception as e:
+        print(f"Error loading master info: {e}")
+        return
+
+    # --- helper: look up unit from masters_info --------------------------
+    def _get_unit(col_name):
+        row = masters_info.loc[masters_info['Abreviation'] == col_name, 'Units']
+        if not row.empty:
+            return row.values[0]
+        return '–'
+
+    # --- individual rho columns ------------------------------------------
+    rho_cols = ['rho_1', 'rho_2', 'rho_3', 'rho_4']
+    unit = _get_unit('rho_1')          # same unit for all rho columns
+
+    header = "General Dataset Statistics"
+    sep = "=" * 60
+
+    print(f"\n{sep}")
+    print(f"  {header}")
+    print(f"{sep}\n")
+
+    # Section: individual slab densities
+    print(f"  Slab densities (100 ml cutter)  [{unit}]")
+    print(f"  {'-' * 46}")
+
+    all_rho_values = []
+    for col in rho_cols:
+        if col in masters.columns:
+            vals = masters[col].dropna()
+            n = len(vals)
+            mean = vals.mean()
+            std = vals.std()
+            all_rho_values.append(vals)
+            print(f"    {col:<8}  mean = {mean:7.1f}  ±  {std:5.1f}   (n={n})")
+        else:
+            print(f"    {col:<8}  — column not found")
+
+    # Section: all slab densities combined
+    if all_rho_values:
+        combined = pd.concat(all_rho_values, ignore_index=True)
+        n_all = len(combined)
+        mean_all = combined.mean()
+        std_all = combined.std()
+        print(f"    {'all':<8}  mean = {mean_all:7.1f}  ±  {std_all:5.1f}   (n={n_all})")
+
+    print()
+
+    # Section: substratum density
+    sub_col = 'rho_sub'
+    unit_sub = _get_unit(sub_col)
+    print(f"  Substratum density  [{unit_sub}]")
+    print(f"  {'-' * 46}")
+    if sub_col in masters.columns:
+        vals_sub = masters[sub_col].dropna()
+        n_sub = len(vals_sub)
+        if n_sub > 0:
+            mean_sub = vals_sub.mean()
+            std_sub = vals_sub.std()
+            print(f"    {sub_col:<8}  mean = {mean_sub:7.1f}  ±  {std_sub:5.1f}   (n={n_sub})")
+        else:
+            print(f"    {sub_col:<8}  — no valid measurements")
+    else:
+        print(f"    {sub_col:<8}  — column not found")
+
+    print()
+
+    # Section: slope inclination
+    phi_col = 'phi'
+    unit_phi = _get_unit(phi_col)
+    print(f"  Slope inclination  [{unit_phi}]")
+    print(f"  {'-' * 46}")
+    if phi_col in masters.columns:
+        vals_phi = masters[phi_col].dropna().abs()
+        n_phi = len(vals_phi)
+        if n_phi > 0:
+            mean_phi = vals_phi.mean()
+            std_phi = vals_phi.std()
+            print(f"    {phi_col:<8}  mean = {mean_phi:7.1f}  ±  {std_phi:5.1f}   (n={n_phi})")
+        else:
+            print(f"    {phi_col:<8}  — no valid measurements")
+    else:
+        print(f"    {phi_col:<8}  — column not found")
+
+    print()
+
+    # Section: temperatures
+    unit_T = _get_unit('T_s1')
+    print(f"  Temperatures  [{unit_T}]")
+    print(f"  {'-' * 46}")
+
+    # Slab temperature: average of T_s1 and T_s2 per experiment
+    t_slab_cols = ['T_s1', 'T_s2']
+    if all(c in masters.columns for c in t_slab_cols):
+        T_slab = masters[t_slab_cols].mean(axis=1).dropna()
+        n_slab_T = len(T_slab)
+        if n_slab_T > 0:
+            mean_slab_T = T_slab.mean()
+            std_slab_T = T_slab.std()
+            print(f"    {'T_slab':<16}  mean = {mean_slab_T:7.1f}  ±  {std_slab_T:5.1f}   (n={n_slab_T})  [avg of T_s1, T_s2]")
+        else:
+            print(f"    {'T_slab':<16}  — no valid measurements")
+    else:
+        missing = [c for c in t_slab_cols if c not in masters.columns]
+        print(f"    {'T_slab':<16}  — column(s) not found: {missing}")
+
+    # Weak layer temperature: average of T_s2 and T_s3 per experiment
+    t_wl_cols = ['T_s2', 'T_s3']
+    if all(c in masters.columns for c in t_wl_cols):
+        T_wl = masters[t_wl_cols].mean(axis=1).dropna()
+        n_wl_T = len(T_wl)
+        if n_wl_T > 0:
+            mean_wl_T = T_wl.mean()
+            std_wl_T = T_wl.std()
+            print(f"    {'T_wl':<16}  mean = {mean_wl_T:7.1f}  ±  {std_wl_T:5.1f}   (n={n_wl_T})  [avg of T_s2, T_s3]")
+        else:
+            print(f"    {'T_wl':<16}  — no valid measurements")
+    else:
+        missing = [c for c in t_wl_cols if c not in masters.columns]
+        print(f"    {'T_wl':<16}  — column(s) not found: {missing}")
+
+    print()
+
+    # Section: mean slab height
+    hs_col = 'h_s'
+    unit_hs = _get_unit(hs_col)
+    print(f"  Slab height  [{unit_hs}]")
+    print(f"  {'-' * 46}")
+    if hs_col in masters.columns:
+        vals_hs = masters[hs_col].dropna()
+        n_hs = len(vals_hs)
+        if n_hs > 0:
+            mean_hs = vals_hs.mean()
+            std_hs = vals_hs.std()
+            print(f"    {hs_col:<8}  mean = {mean_hs:7.1f}  ±  {std_hs:5.1f}   (n={n_hs})")
+        else:
+            print(f"    {hs_col:<8}  — no valid measurements")
+    else:
+        print(f"    {hs_col:<8}  — column not found")
+
+    print()
+
+    # Section: experiment dates
+    date_col = 'date'
+    print(f"  Experiment dates")
+    print(f"  {'-' * 46}")
+    if date_col in masters.columns:
+        dates = pd.to_datetime(masters[date_col], errors='coerce').dropna()
+        date_counts = dates.dt.date.value_counts().sort_index()
+        for d, count in date_counts.items():
+            print(f"    {d}   n = {count}")
+        print(f"    {'—' * 30}")
+        print(f"    {'total':<12}   n = {date_counts.sum()}")
+    else:
+        print(f"    {date_col:<8}  — column not found")
+
+    print(f"\n{sep}\n")

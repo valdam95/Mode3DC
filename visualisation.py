@@ -523,6 +523,270 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
     
     return None
 
+def plot_temperature_density_vs_date(
+    masters_parquet_path,
+    title=None,
+    figsize=(8, 7.5),
+    dpi=100,
+    alpha=0.8,
+    marker_size=2.3,
+    show_legend=True,
+    tick_width=1,
+    tick_length=10,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=1,
+    temperature_unit='°C',
+    density_unit='kg/m³',
+    ylim_temperature=None,
+    ylim_density=None,
+    box_width=4,
+    day_spacing=10,
+):
+    """
+    Plot slab temperature, weak-layer temperature, and slab density vs date.
+
+    Creates a two-panel figure with box plots per experiment date:
+      • Top panel:    slab density  ρ_slab  (row-wise mean of rho_1 … rho_4)
+      • Bottom panel: slab temperature  T_slab  (mean of T_s1, T_s2) and
+                      weak-layer temperature  T_wl  (mean of T_s2, T_s3),
+                      shown side by side for each date.
+
+    Date positions along the x-axis are proportional to the actual calendar
+    distance between experiment days.
+
+    Parameters
+    ----------
+    masters_parquet_path : str
+        Path to the master Parquet file containing at least the columns
+        date, T_s1, T_s2, T_s3, rho_1, rho_2, rho_3, rho_4.
+    title : str, optional
+        Figure title.  If *None* no title is shown.
+    figsize : tuple, default (8, 7.5)
+        Figure size in inches.
+    dpi : int, default 100
+        Figure resolution.
+    alpha : float, default 0.8
+        Box face transparency.
+    marker_size : float, default 2.3
+        Outlier marker size.
+    show_legend : bool, default True
+        Whether to show the legend in the temperature panel.
+    tick_width : float, default 1
+        Tick mark width.
+    tick_length : float, default 10
+        Tick mark length in points.
+    labelpad_x : float, default 15
+        X-axis label padding.
+    labelpad_y : float, default 15
+        Y-axis label padding.
+    frame_thickness : float, default 1
+        Spine line width.
+    temperature_unit : str, default '°C'
+        Unit label for the temperature axis.
+    density_unit : str, default 'kg/m³'
+        Unit label for the density axis.
+    ylim_temperature : tuple, optional
+        (ymin, ymax) for the temperature panel.
+    ylim_density : tuple, optional
+        (ymin, ymax) for the density panel.
+    box_width : float, default 4
+        Width of each box plot.
+    day_spacing : float, default 10
+        Position units per calendar day (controls horizontal spread).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure object.
+    """
+    from matplotlib.ticker import MultipleLocator
+    import matplotlib.patches as mpatches
+
+    # --- load data --------------------------------------------------------
+    try:
+        df = pd.read_parquet(masters_parquet_path, engine='fastparquet')
+        print(f"Loaded data from Parquet: {masters_parquet_path}")
+    except Exception as e:
+        print(f"Error loading Parquet file {masters_parquet_path}: {e}")
+        return None
+
+    if df.empty:
+        print("No data to visualize")
+        return None
+
+    required_columns = ['date', 'T_s1', 'T_s2', 'T_s3',
+                        'rho_1', 'rho_2', 'rho_3', 'rho_4']
+    missing = [c for c in required_columns if c not in df.columns]
+    if missing:
+        print(f"Error: Required columns not found: {missing}")
+        return None
+
+    # --- derived quantities -----------------------------------------------
+    df = df.copy()
+    df['T_slab']   = df[['T_s1', 'T_s2']].mean(axis=1)
+    df['T_wl']     = df[['T_s2', 'T_s3']].mean(axis=1)
+    df['rho_slab'] = df[['rho_1', 'rho_2', 'rho_3', 'rho_4']].mean(axis=1)
+
+    # parse dates
+    if not pd.api.types.is_datetime64_any_dtype(df['date']):
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.dropna(subset=['date']).sort_values('date')
+
+    unique_dates = sorted(df['date'].unique())
+    if not unique_dates:
+        print("Error: No valid dates found")
+        return None
+
+    # --- proportional date positions --------------------------------------
+    origin = unique_dates[0]
+    base_offset = 20
+    date_positions = {}
+    for d in unique_dates:
+        day_delta = (d - origin) / np.timedelta64(1, 'D')
+        date_positions[d] = base_offset + day_delta * day_spacing
+
+    # Temperature box offset (T_slab left, T_wl right)
+    offset_temp = (day_spacing - box_width) / 2 * 0.8
+
+    # --- style setup ------------------------------------------------------
+    setup_visualization_style()
+
+    color_rho    = lo.COLORS['indigo']
+    color_T_slab = lo.COLORS['orange']
+    color_T_wl   = lo.COLORS['blue']
+
+    # --- figure -----------------------------------------------------------
+    fig, (ax_density, ax_temp) = plt.subplots(
+        2, 1, figsize=figsize, dpi=dpi, sharex=True,
+        gridspec_kw={'hspace': 0.15},
+        constrained_layout=True,
+    )
+    fig.patch.set_facecolor('white')
+    ax_density.set_facecolor('white')
+    ax_temp.set_facecolor('white')
+
+    # --- collect data per date --------------------------------------------
+    rho_data, rho_pos = [], []
+    ts_data,  ts_pos  = [], []
+    tw_data,  tw_pos  = [], []
+    tick_pos_list, tick_lbl_list = [], []
+
+    for d in unique_dates:
+        pos = date_positions[d]
+        sub = df[df['date'] == d]
+
+        rho_vals = sub['rho_slab'].dropna().values
+        if len(rho_vals):
+            rho_data.append(rho_vals)
+            rho_pos.append(pos)
+
+        ts_vals = sub['T_slab'].dropna().values
+        if len(ts_vals):
+            ts_data.append(ts_vals)
+            ts_pos.append(pos - offset_temp)
+
+        tw_vals = sub['T_wl'].dropna().values
+        if len(tw_vals):
+            tw_data.append(tw_vals)
+            tw_pos.append(pos + offset_temp)
+
+        tick_pos_list.append(pos)
+        tick_lbl_list.append(pd.Timestamp(d).strftime('%d. %b'))
+
+    # --- draw box plots ---------------------------------------------------
+    def _draw_bp(ax, data, positions, color, marker='o'):
+        if not data:
+            return
+        bp = ax.boxplot(
+            data, positions=positions, widths=box_width,
+            patch_artist=True, zorder=2,
+            medianprops=dict(color='black', linewidth=1),
+            boxprops=dict(linewidth=0),
+            whiskerprops=dict(linewidth=1, color='grey'),
+            capprops=dict(linewidth=1, color='grey'),
+            flierprops=dict(marker=marker, markersize=marker_size,
+                            markeredgewidth=0, alpha=alpha),
+        )
+        for patch in bp['boxes']:
+            patch.set_facecolor(color)
+            patch.set_alpha(alpha)
+        for flier in bp['fliers']:
+            flier.set_markerfacecolor(color)
+            flier.set_markeredgewidth(0)
+            flier.set_marker(marker)
+            flier.set_zorder(1)
+
+    _draw_bp(ax_density, rho_data, rho_pos, color_rho)
+    _draw_bp(ax_temp,    ts_data,  ts_pos,  color_T_slab, marker='o')
+    _draw_bp(ax_temp,    tw_data,  tw_pos,  color_T_wl,   marker='s')
+
+    # --- labels -----------------------------------------------------------
+    ax_temp.set_xlabel(
+        'Date', fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x, color='black')
+    ax_density.set_ylabel(
+        f'Density $\\rho_{{\\mathrm{{slab}}}}$ ({density_unit})',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y, color='black')
+    ax_temp.set_ylabel(
+        f'Temperature ({temperature_unit})',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y, color='black')
+
+    if title is not None:
+        fig.suptitle(title, fontsize=VISUALIZATION_STYLES['font_size'], y=0.995)
+
+    # --- x-axis -----------------------------------------------------------
+    if tick_pos_list:
+        ax_temp.set_xticks(tick_pos_list)
+        ax_temp.set_xticklabels(tick_lbl_list, rotation=45, ha='right')
+        margin = 15
+        ax_density.set_xlim(min(tick_pos_list) - margin,
+                            max(tick_pos_list) + margin)
+        ax_temp.set_xlim(min(tick_pos_list) - margin,
+                         max(tick_pos_list) + margin)
+
+    # --- y-axis limits & locators -----------------------------------------
+    if ylim_density is not None:
+        ax_density.set_ylim(ylim_density)
+    if ylim_temperature is not None:
+        ax_temp.set_ylim(ylim_temperature)
+
+    ax_temp.yaxis.set_major_locator(MultipleLocator(2))
+    ax_density.yaxis.set_major_locator(MultipleLocator(50))
+
+    # --- tick & spine styling ---------------------------------------------
+    for ax in (ax_density, ax_temp):
+        ax.tick_params(
+            axis='both', which='major',
+            labelsize=VISUALIZATION_STYLES['font_size'],
+            pad=10, width=tick_width, length=tick_length,
+            bottom=True, top=True, left=True, right=True,
+            labelcolor='black', color='grey',
+        )
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(frame_thickness)
+        ax.grid(False)
+
+    # --- legend -----------------------------------------------------------
+    if show_legend:
+        handles = [
+            mpatches.Patch(facecolor=color_T_slab, edgecolor='none',
+                           alpha=alpha, label='$T_{\\mathrm{slab}}$'),
+            mpatches.Patch(facecolor=color_T_wl, edgecolor='none',
+                           alpha=alpha, label='$T_{\\mathrm{wl}}$'),
+        ]
+        ax_temp.legend(
+            handles=handles, loc='lower left',
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            frameon=False)
+
+    fig.set_size_inches(figsize)
+    return fig
+
+
 def plot_column_over_afn(parquet_path, title=None):
     """
     Interactive plot of any column value over AFN with dropdown selection.
