@@ -1795,6 +1795,25 @@ def display_gen_stats(parquet_path_masters, parquet_path_info):
 
     print()
 
+    # Section: sample length
+    L_col = 'L'
+    unit_L = _get_unit(L_col)
+    print(f"  Sample length  [{unit_L}]")
+    print(f"  {'-' * 46}")
+    if L_col in masters.columns:
+        vals_L = masters[L_col].dropna()
+        n_L = len(vals_L)
+        if n_L > 0:
+            mean_L = vals_L.mean()
+            std_L = vals_L.std()
+            print(f"    {L_col:<8}  mean = {mean_L:7.1f}  ±  {std_L:5.1f}   (n={n_L})")
+        else:
+            print(f"    {L_col:<8}  — no valid measurements")
+    else:
+        print(f"    {L_col:<8}  — column not found")
+
+    print()
+
     # Section: experiment dates
     date_col = 'date'
     print(f"  Experiment dates")

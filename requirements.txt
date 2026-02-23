@@ -19,3 +19,8 @@ ipywidgets>=8.1.0
 # Optional: for better notebook display
 ipython>=8.12.0
 
+# Weak-layer anticrack nucleation model (branch will be merged into main)
+weac @ git+https://github.com/2phi/weac.git@feature/modeIII
+
+# PyArrow for Parquet file support
+pyarrow>=15.0.0
