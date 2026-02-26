@@ -88,8 +88,17 @@ VISUALIZATION_STYLES = {
 # STYLE SETUP FUNCTIONS
 # ============================================================================
 
+
 def setup_font():
-    """Setup font configuration with Minion Pro or similar serif font."""
+    """Setup font configuration with Minion Pro or similar serif font.
+    
+    Also configures math mode to use a compatible serif font:
+    - If Minion Pro is available, uses STIX for math mode (serif math font)
+    - Otherwise, uses the same serif font for both text and math mode
+    
+    Returns:
+        tuple: (selected_font, math_font_set) where math_font_set is the math font configuration
+    """
     # List of preferred fonts in order of preference
     preferred_fonts = [
         'Minion Pro',
@@ -113,13 +122,32 @@ def setup_font():
     
     if selected_font:
         print(f"Using font: {selected_font}")
-        return selected_font
+        
+        # Configure math mode font
+        if 'Minion Pro' in selected_font:
+            # Minion Pro doesn't have a math variant, use STIX (serif math font) as equivalent
+            math_font_set = 'stix'
+            print("Using STIX font for math mode (compatible with Minion Pro)")
+        else:
+            # For other serif fonts, try to use matching math font
+            # Use STIX as a general serif math font fallback
+            math_font_set = 'stix'
+            print("Using STIX font for math mode")
+        
+        # Set math font globally
+        plt.rcParams['mathtext.fontset'] = math_font_set
+        plt.rcParams['mathtext.default'] = 'it'  # Use italic as default
+        
+        return selected_font, math_font_set
     else:
         print("Using default serif font")
-        return 'serif'
+        math_font_set = 'cm'
+        plt.rcParams['mathtext.fontset'] = math_font_set
+        plt.rcParams['mathtext.default'] = 'it'
+        return 'serif', math_font_set
 
 # Set the font
-SELECTED_FONT = setup_font()
+SELECTED_FONT, MATH_FONT_SET = setup_font()
 
 def setup_matplotlib_style():
     """Configure matplotlib with general project-specific styling."""
@@ -128,6 +156,8 @@ def setup_matplotlib_style():
         'figure.dpi': PLOT_STYLES['dpi'],
         'font.size': PLOT_STYLES['font_size'],
         'font.family': SELECTED_FONT,
+        'mathtext.fontset': MATH_FONT_SET,
+        'mathtext.default': 'it',
         'lines.linewidth': PLOT_STYLES['line_width'],
         'lines.markersize': PLOT_STYLES['marker_size'],
         'grid.alpha': PLOT_STYLES['grid_alpha'],
@@ -144,6 +174,8 @@ def setup_crack_annotator_style():
         'figure.dpi': CRACK_ANNOTATOR_STYLES['dpi'],
         'font.size': CRACK_ANNOTATOR_STYLES['font_size'],
         'font.family': SELECTED_FONT,
+        'mathtext.fontset': MATH_FONT_SET,
+        'mathtext.default': 'it',
         'lines.linewidth': CRACK_ANNOTATOR_STYLES['line_width'],
         'lines.markersize': CRACK_ANNOTATOR_STYLES['marker_size'],
         'grid.alpha': CRACK_ANNOTATOR_STYLES['grid_alpha'],
@@ -159,6 +191,8 @@ def setup_visualization_style():
     plt.rcParams.update({
         'font.size': VISUALIZATION_STYLES['font_size'],
         'font.family': SELECTED_FONT,
+        'mathtext.fontset': MATH_FONT_SET,
+        'mathtext.default': 'it',
         'axes.labelsize': VISUALIZATION_STYLES['font_size'],
         'axes.titlesize': VISUALIZATION_STYLES['font_size'],
         'xtick.labelsize': VISUALIZATION_STYLES['font_size'],
@@ -442,7 +476,14 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
     unique_dates = plot_data['date'].sort_values().unique()
     color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
     
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
     fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
     
     for date in unique_dates:
         subset = plot_data[plot_data['date'] == date].copy()
@@ -473,8 +514,8 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
                 color=color,
                 marker=marker,
                 alpha=face_alpha,
-                edgecolor=edge_col,
-                linewidth=1.0,
+                edgecolors=edge_col,
+                linewidths=1.0,
                 label=label
             )
             return True
@@ -505,7 +546,17 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
     ax.set_xlabel('AFN')
     ax.set_ylabel('Force (N)')
     ax.set_title(title)
-    ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10, width=1, length=10,
+        bottom=True, top=True, left=True, right=True,
+        labelcolor='black', color='grey',
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+    ax.grid(False)
     
     # Legend for dates (colors)
     date_legend = ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -651,6 +702,10 @@ def plot_temperature_density_vs_date(
 
     # --- style setup ------------------------------------------------------
     setup_visualization_style()
+    # Re-apply text/math font here in case other notebook cells changed rcParams.
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
 
     color_rho    = lo.COLORS['indigo']
     color_T_slab = lo.COLORS['orange']
@@ -887,7 +942,14 @@ def plot_column_over_afn(parquet_path, title=None):
         unique_dates = plot_data['date'].sort_values().unique()
         color_map = {date: palette[i % len(palette)] for i, date in enumerate(unique_dates)}
         
+        setup_visualization_style()
+        plt.rcParams['font.family'] = SELECTED_FONT
+        plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+        plt.rcParams['mathtext.default'] = 'it'
+
         fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+        fig.patch.set_facecolor('white')
+        ax.set_facecolor('white')
         
         for date in unique_dates:
             subset = plot_data[plot_data['date'] == date].copy()
@@ -936,7 +998,17 @@ def plot_column_over_afn(parquet_path, title=None):
         ax.set_xlabel('AFN')
         ax.set_ylabel(ylabel)
         ax.set_title(plot_title)
-        ax.grid(alpha=0.2, linestyle='--', linewidth=0.5)
+        ax.tick_params(
+            axis='both', which='major',
+            labelsize=VISUALIZATION_STYLES['font_size'],
+            pad=10, width=1, length=10,
+            bottom=True, top=True, left=True, right=True,
+            labelcolor='black', color='grey',
+        )
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.0)
+        ax.grid(False)
         
         # Legend for dates (colors)
         ax.legend(title='Date', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -952,3 +1024,528 @@ def plot_column_over_afn(parquet_path, title=None):
     display(out, controls)
     
     return None
+
+
+def plot_g_scatter_with_uncertainty(
+    df_or_path,
+    x_component='G1',
+    y_component='G2',
+    title=None,
+    figsize=(7, 6),
+    dpi=120,
+):
+    """
+    Quick scatter plot for G-components with uncertainty whiskers (no end caps).
+
+    Parameters
+    ----------
+    df_or_path : pd.DataFrame or str
+        DataFrame with G-columns, or path to parquet file.
+    x_component : str, default 'G1'
+        One of 'G1', 'G2', 'G3' used for x-axis.
+    y_component : str, default 'G2'
+        One of 'G1', 'G2', 'G3' used for y-axis.
+    title : str, optional
+        Plot title.
+    figsize : tuple, default (7, 6)
+        Figure size.
+    dpi : int, default 120
+        Figure DPI.
+    """
+    component_map = {
+        'G1': 'G1c',
+        'G2': 'G2c',
+        'G3': 'G3c',
+    }
+
+    x_key = str(x_component).upper().strip()
+    y_key = str(y_component).upper().strip()
+    if x_key not in component_map or y_key not in component_map:
+        print("Error: x_component and y_component must be one of: 'G1', 'G2', 'G3'.")
+        return None
+
+    x_col = component_map[x_key]
+    y_col = component_map[y_key]
+    x_err_col = f"{x_col}_uncertainty"
+    y_err_col = f"{y_col}_uncertainty"
+
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            print(f"Error loading parquet: {e}")
+            return None
+
+    required_cols = [x_col, y_col, x_err_col, y_err_col]
+    # Avoid duplicate requests.
+    required_cols = list(dict.fromkeys(required_cols))
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        print(f"Error: Missing required columns: {missing_cols}")
+        return None
+
+    # Build a clean 1D numeric table even if source DataFrame has duplicate column names.
+    plot_df = pd.DataFrame(index=df.index)
+    for col in required_cols:
+        raw_col = df[col]
+        if isinstance(raw_col, pd.DataFrame):
+            # If duplicate column names exist, use the first occurrence.
+            raw_col = raw_col.iloc[:, 0]
+        plot_df[col] = pd.to_numeric(raw_col, errors='coerce')
+    plot_df = plot_df.dropna(subset=[x_col, y_col])
+    if plot_df.empty:
+        print("No valid rows to plot.")
+        return None
+
+    # Missing uncertainty values are interpreted as zero whisker length.
+    plot_df[x_err_col] = plot_df[x_err_col].fillna(0.0).clip(lower=0.0)
+    plot_df[y_err_col] = plot_df[y_err_col].fillna(0.0).clip(lower=0.0)
+
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    ax.errorbar(
+        plot_df[x_col],
+        plot_df[y_col],
+        xerr=plot_df[x_err_col],
+        yerr=plot_df[y_err_col],
+        fmt='none',
+        ecolor='0.45',
+        elinewidth=1.0,
+        capsize=0,  # no horizontal end lines ("whiskers without line in the end")
+        alpha=0.85,
+        zorder=1,
+    )
+
+    ax.scatter(
+        plot_df[x_col],
+        plot_df[y_col],
+        c=lo.COLORS['blue'],
+        s=40,
+        alpha=0.9,
+        edgecolors='none',
+        zorder=2,
+    )
+
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(title or f"{y_col} vs {x_col} with uncertainty")
+    # Keep identical data scaling on both axes so geometric distances are comparable.
+    ax.set_aspect('equal', adjustable='box')
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10, width=1, length=10,
+        bottom=True, top=True, left=True, right=True,
+        labelcolor='black', color='grey',
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+    ax.grid(False)
+    plt.tight_layout()
+    plt.show()
+    return None
+
+
+def plot_giii_ratio_vs_g(
+    df_or_path,
+    title="Mode III ratio vs (G1+G3)",
+    figsize=(8, 6),
+    dpi=120,
+    show_legend=False,
+):
+    """
+    Plot Mode III ratio over (G1+G3):
+      x = (G1+G3)
+      y = GIII/(G1+G3)
+
+    Uses:
+    - GIII = G3c
+    - GI + GIII = G1c + G3c
+    """
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            print(f"Error loading parquet: {e}")
+            return None
+
+    required_cols = ['G1c', 'G2c', 'G3c']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        print(f"Error: Missing required columns: {missing_cols}")
+        return None
+
+    plot_df = df.copy()
+    plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce')
+    plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce')
+
+    plot_df['G13_total'] = plot_df['G1c'] + plot_df['G3c']
+    plot_df = plot_df.dropna(subset=['G1c', 'G3c', 'G13_total'])
+    plot_df = plot_df[plot_df['G13_total'] > 0]
+    if plot_df.empty:
+        print("No valid rows to plot (requires G1+G3 > 0).")
+        return None
+
+    plot_df['GIII_over_G13'] = plot_df['G3c'] / plot_df['G13_total']
+
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+    
+    def _plot_mode_with_fit(x_series, y_series, color, label):
+        x = pd.to_numeric(x_series, errors='coerce').to_numpy(dtype=float)
+        y = pd.to_numeric(y_series, errors='coerce').to_numpy(dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y)
+        x = x[valid]
+        y = y[valid]
+        if len(x) == 0:
+            return
+
+        ax.scatter(
+            x,
+            y,
+            c=color,
+            s=45,
+            alpha=0.85,
+            edgecolors='none',
+            label=label,
+            zorder=3,
+        )
+
+        # Linear least-squares fit: y = m*x + b
+        if len(x) < 2:
+            return
+        m, b = np.polyfit(x, y, 1)
+        x_fit = np.linspace(float(np.min(x)), float(np.max(x)), 200)
+        y_fit = m * x_fit + b
+        ax.plot(x_fit, y_fit, color=color, linewidth=1.8, zorder=4)
+
+        # Approximate 95% prediction band for individual observations.
+        n = len(x)
+        dof = n - 2
+        if dof <= 0:
+            return
+        y_hat = m * x + b
+        residuals = y - y_hat
+        s_err = np.sqrt(np.sum(residuals ** 2) / dof)
+        x_mean = np.mean(x)
+        sxx = np.sum((x - x_mean) ** 2)
+        if sxx <= 0:
+            return
+
+        # z=1.96 approximation (good for moderate n); avoids extra scipy dependency.
+        t_crit = 1.96
+        pred_scale = np.sqrt(1.0 + (1.0 / n) + ((x_fit - x_mean) ** 2) / sxx)
+        band = t_crit * s_err * pred_scale
+        ax.fill_between(
+            x_fit,
+            y_fit - band,
+            y_fit + band,
+            color=color,
+            alpha=0.2,
+            linewidth=0,
+            zorder=2,
+        )
+
+    _plot_mode_with_fit(plot_df['G13_total'], plot_df['GIII_over_G13'], lo.COLORS['blue'], 'Mode III ratio')
+
+    ax.set_xlabel('G_I + G_III (J/m^2)')
+    ax.set_ylabel(r'Mode III ratio $\phi_{\mathrm{III}} = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$')
+    ax.set_title(title)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlim(0.0, float(plot_df['G13_total'].max()) * 1.05 if not plot_df.empty else 1.0)
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10, width=1, length=10,
+        bottom=True, top=True, left=True, right=True,
+        labelcolor='black', color='grey',
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+    ax.grid(False)
+    if show_legend:
+        ax.legend()
+    plt.tight_layout()
+    plt.show()
+    return None
+
+
+def plot_surface_load_mode_III_ratio(
+    df_or_path,
+    title=None,
+    figsize=(14, 7.5),
+    dpi=120,
+    alpha=0.85,
+    marker_size=45,
+    tick_width=1,
+    tick_length=10,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=1,
+):
+    """
+    Scatter plot of Mode III ratio over slope-normal surface load component.
+
+    x-axis:
+        p_w,x = (m*g)/(n_w*50*290) * sin(phi)   [N/mm^2]
+    y-axis:
+        psi_III = G_III / (G_I + G_III)
+    """
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            print(f"Error loading parquet: {e}")
+            return None
+
+    required_cols = ['total weights', 'weight number', 'phi', 'G1c', 'G3c']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        print(f"Error: Missing required columns: {missing_cols}")
+        return None
+
+    plot_df = df.copy()
+    # Use plain float dtypes to avoid pd.NA ambiguity in masks/comparisons.
+    plot_df['total_weights_kg'] = pd.to_numeric(plot_df['total weights'], errors='coerce').astype('float64')
+    plot_df['weight_number'] = pd.to_numeric(plot_df['weight number'], errors='coerce').astype('float64')
+    plot_df['phi'] = pd.to_numeric(plot_df['phi'], errors='coerce').astype('float64')
+    plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce').astype('float64')
+    plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce').astype('float64')
+
+    # Surface-load calculation requested by user (same as lines 1207-1213 logic).
+    plot_df['phi_rad'] = np.deg2rad(plot_df['phi'])
+    area_mm2 = plot_df['weight_number'] * 50.0 * 290.0
+    load_n = plot_df['total_weights_kg'] * 9.81
+    plot_df['surface_load_n_per_mm2'] = np.nan
+    valid_area = area_mm2.gt(0).fillna(False)
+    plot_df.loc[valid_area, 'surface_load_n_per_mm2'] = (
+        load_n.loc[valid_area] / area_mm2.loc[valid_area]
+    )
+    plot_df['p_wx'] = plot_df['surface_load_n_per_mm2'] * np.sin(plot_df['phi_rad'])
+
+    plot_df['G13_total'] = plot_df['G1c'] + plot_df['G3c']
+    plot_df = plot_df.dropna(subset=['G13_total', 'G3c'])
+    plot_df = plot_df[plot_df['G13_total'] > 0]
+    if plot_df.empty:
+        print("No valid rows to plot (check total weights, weight number, phi, G1c, and G3c).")
+        return None
+
+    plot_df['psi_III'] = plot_df['G3c'] / plot_df['G13_total']
+    # Keep datapoints without valid surface-load calculation and place them at x=0.
+    plot_df['p_wx_plot'] = pd.to_numeric(plot_df['p_wx'], errors='coerce').fillna(0.0)
+    # Split zero-load points around x=0 by slope sign for readability:
+    # negative phi slightly left, non-negative phi slightly right.
+    max_abs_pw = float(np.nanmax(np.abs(plot_df['p_wx_plot']))) if len(plot_df) else 0.0
+    zero_offset = max(max_abs_pw * 0.01, 1e-5)
+    zero_mask = np.isclose(plot_df['p_wx_plot'].to_numpy(dtype=float), 0.0, atol=1e-14)
+    neg_phi_mask = plot_df['phi'].to_numpy(dtype=float) < 0.0
+    shift = np.where(neg_phi_mask, -zero_offset, zero_offset)
+    p_plot = plot_df['p_wx_plot'].to_numpy(dtype=float)
+    p_plot[zero_mask] = shift[zero_mask]
+    plot_df['p_wx_plot'] = p_plot
+
+    # Match style behavior used across the project.
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    ax.scatter(
+        plot_df['p_wx_plot'],
+        plot_df['psi_III'],
+        c=lo.COLORS['blue'],
+        s=marker_size,
+        alpha=alpha,
+        edgecolors='none',
+        zorder=3,
+    )
+
+    ax.set_xlabel(
+        r'Slope normal surface load $p_{\mathrm{w},x}$ (N/mm$^2$) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x,
+        color='black',
+    )
+    ax.set_ylabel(
+        r'Mode III ratio $\psi_{\mathrm{III}}=\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ (J/m²) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y,
+        color='black',
+    )
+    if title is not None:
+        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'])
+
+    ax.set_ylim(0.0, 1.05)
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10, width=tick_width, length=tick_length,
+        bottom=True, top=True, left=True, right=True,
+        labelcolor='black', color='grey',
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(frame_thickness)
+    ax.grid(False)
+
+    plt.show()
+    return fig
+
+
+def plot_pc_vs_g1(
+    df_or_path,
+    title=None,
+    figsize=(8, 7.5),
+    dpi=100,
+    alpha=0.8,
+    marker_size=2.3,
+    show_legend=False,
+    tick_width=1,
+    tick_length=10,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=1,
+    xlim=None,
+    ylim=None,
+):
+    """
+    Plot fracture limit force P_c over Mode-I fracture energy G_I.
+
+    x-axis:
+        G_I = G1c [J/m^2]
+    y-axis:
+        P_c force component [N]
+    """
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            print(f"Error loading parquet: {e}")
+            return None
+
+    required_cols = ['G1c', 'P_c']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        print(f"Error: Missing required columns: {missing_cols}")
+        return None
+
+    plot_df = df.copy()
+    plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce')
+
+    def _pc_force_value(v):
+        pc_force = extract_pc_force(v)
+        if pc_force is not None:
+            return pc_force
+        try:
+            return float(v)
+        except Exception:
+            return np.nan
+
+    plot_df['P_c_force'] = plot_df['P_c'].apply(_pc_force_value)
+    plot_df['P_c_force'] = pd.to_numeric(plot_df['P_c_force'], errors='coerce')
+    plot_df = plot_df.dropna(subset=['G1c', 'P_c_force'])
+    if plot_df.empty:
+        print("No valid rows to plot (requires numeric G1c and P_c force).")
+        return None
+
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    ax.scatter(
+        plot_df['G1c'],
+        plot_df['P_c_force'],
+        alpha=alpha,
+        s=marker_size ** 2 * 10,
+        facecolor=lo.COLORS['blue'],
+        edgecolors='none',
+        linewidths=0,
+        marker='o',
+        label=r'$P_c$ vs $G_I$' if show_legend else '',
+        zorder=2,
+    )
+
+    ax.set_xlabel(
+        r'Mode-I fracture energy $\mathcal{G}_{\mathrm{I}}$ (J/m$^2$) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x,
+        color='black',
+    )
+    ax.set_ylabel(
+        r'Fracture limit force $P_c$ (N) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y,
+        color='black',
+    )
+
+    if title is not None:
+        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
+
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10,
+        width=tick_width,
+        length=tick_length,
+        bottom=True, top=True, labeltop=False,
+        left=True, right=True, labelright=False,
+        labelcolor='black', color='grey',
+    )
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(frame_thickness)
+    ax.grid(False)
+
+    if show_legend:
+        ax.legend(
+            loc='best',
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            frameon=True,
+            fancybox=False,
+            edgecolor='black',
+            framealpha=1.0,
+        )
+
+    plt.tight_layout()
+    return fig

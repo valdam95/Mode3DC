@@ -13,6 +13,8 @@ import glob
 import re
 import math
 import subprocess
+import ast
+import tempfile
 
 # ============================================================================
 # SERVER CONFIGURATION
@@ -1196,6 +1198,562 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
     
     return df_merged, df_info_merged
 
+def calculate_err_weac(
+    parquet_path_masters,
+    parquet_path_info,
+    force_overwrite=False,
+    rho_wl=138.3,
+    h_wl=4.5,
+    E_wl=1.0,
+    nu_wl=0.15,
+    h_wl_err=2.0,
+    h_s_err=5.0,
+    l_dw_err=5.0,
+    L_err=10.0,
+    rho_err=2.0,
+    E_wl_err=0.5,
+    nu_wl_err=0.05,
+    pc_rel_err=0.01,
+):
+    """
+    Calculate WEAC differential fracture energies and their propagated uncertainties.
+
+    This function computes Gc, G1c, G2c and G3c using WEAC for each valid row in the
+    master parquet. It also computes uncertainty columns
+    (Gc_uncertainty, G1c_uncertainty, G2c_uncertainty, G3c_uncertainty)
+    via first-order error propagation with independent input uncertainties.
+    Because parquet cannot store uncertainty objects, nominal values and one-sigma
+    uncertainties are stored in separate float columns.
+
+    Parameters
+    ----------
+    parquet_path_masters : str
+        Path to the master data parquet (e.g. M3DC_raw.parquet).
+    parquet_path_info : str
+        Path to the master metadata parquet (e.g. M3DC_raw_info.parquet).
+    force_overwrite : bool, default False
+        If True, recompute and overwrite Gc/G1c/G2c/G3c for all rows with valid
+        inputs. If False, only rows with missing value/uncertainty columns are computed.
+    rho_wl : float, default 138.3
+        Weak-layer density in kg/m^3.
+    h_wl : float, default 4.5
+        Weak-layer thickness in mm.
+    E_wl : float, default 1.0
+        Weak-layer Young's modulus in MPa.
+    nu_wl : float, default 0.15
+        Weak-layer Poisson ratio (-).
+    h_wl_err : float, default 2.0
+        Absolute uncertainty of weak-layer thickness (mm).
+    h_s_err : float, default 5.0
+        Absolute uncertainty of slab height h_s (mm).
+    l_dw_err : float, default 5.0
+        Absolute uncertainty of l_dw (mm).
+    L_err : float, default 10.0
+        Absolute uncertainty of total slab length L (mm).
+    rho_err : float, default 2.0
+        Absolute uncertainty of slab densities rho_1 to rho_4 (kg/m^3).
+    E_wl_err : float, default 0.5
+        Absolute uncertainty of weak-layer Young's modulus (MPa).
+    nu_wl_err : float, default 0.05
+        Absolute uncertainty of weak-layer Poisson ratio (-).
+    pc_rel_err : float, default 0.01
+        Relative uncertainty of P_c[1] (1% = 0.01).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        Updated (master_data, master_info) DataFrames.
+    """
+    try:
+        from weac.components import Layer, Config, ScenarioConfig, ModelInput, WeakLayer, Segment
+        from weac.core.system_model import SystemModel
+        from weac.analysis.analyzer import Analyzer
+        from uncertainties import ufloat
+    except Exception as e:
+        print(f"Error importing WEAC/uncertainties modules: {e}")
+        return None, None
+
+    try:
+        df_masters = pd.read_parquet(parquet_path_masters, engine='fastparquet')
+        print(f"Loaded master data from: {parquet_path_masters}")
+    except Exception as e:
+        print(f"Error loading master data {parquet_path_masters}: {e}")
+        return None, None
+
+    try:
+        df_masters_info = pd.read_parquet(parquet_path_info, engine='fastparquet')
+        print(f"Loaded master metadata from: {parquet_path_info}")
+    except Exception as e:
+        print(f"Error loading master metadata {parquet_path_info}: {e}")
+        return None, None
+
+    required_columns = [
+        'phi', 'h_s', 'rho_1', 'rho_2', 'rho_3', 'rho_4',
+        'P_c', 'a', 'L', 'weight number', 'l_dw'
+    ]
+    missing_required = [col for col in required_columns if col not in df_masters.columns]
+    if missing_required:
+        print(f"Error: Missing required columns in master data: {missing_required}")
+        return df_masters, df_masters_info
+
+    def _atomic_write_parquet(df_to_write, target_path):
+        """Write parquet to a temp file in the same directory and atomically replace target."""
+        target_dir = os.path.dirname(target_path) or "."
+        os.makedirs(target_dir, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".parquet", dir=target_dir)
+        os.close(fd)
+        try:
+            df_to_write.to_parquet(temp_path, index=False, engine='fastparquet')
+            os.replace(temp_path, target_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise
+
+    def _parse_list_like(value):
+        """Convert list-like strings to Python lists while keeping non-list scalars unchanged."""
+        if isinstance(value, (list, tuple, np.ndarray)):
+            return list(value)
+        if isinstance(value, str):
+            try:
+                parsed = ast.literal_eval(value)
+                if isinstance(parsed, (list, tuple, np.ndarray)):
+                    return list(parsed)
+            except Exception:
+                return None
+        return None
+
+    def _ensure_positive(value, minimum=1e-9):
+        return max(float(value), minimum)
+
+    def _clip_nu(value):
+        return float(np.clip(value, 1e-6, 0.499))
+
+    def _extract_pc_force(value):
+        """Return fracture force from P_c[1], or NaN if unavailable."""
+        parsed = _parse_list_like(value)
+        if parsed is None or len(parsed) < 2:
+            return np.nan
+        try:
+            return float(parsed[1])
+        except Exception:
+            return np.nan
+
+    def _afn_as_int(value):
+        """Return AFN as int if possible, else None."""
+        try:
+            if pd.isna(value):
+                return None
+            return int(float(value))
+        except Exception:
+            return None
+
+    def _compute_load_vector(experiment, pc_force, h_s_value, rho_values):
+        # Logic kept equivalent to notebook equations.
+        phi = float(experiment['phi'])
+        l_lh = 50.0  # loading-head length [mm]
+
+        g = 9810.0  # mm/s^2
+        m_lh = 0.5404 * 1e-3  # loading-head mass [tonne]
+        h_s_val = float(h_s_value)
+        rho_vals = np.array(rho_values, dtype=float)
+
+        m_rs = h_s_val * 290 * 50 * np.mean(rho_vals) * 1e-12  # remaining snow mass [tonne]
+        l_rs_z = np.sum(rho_vals * np.linspace(-3 / 8, 3 / 8, 4) * h_s_val) / np.sum(rho_vals)
+
+        F_x = -(g * (m_lh + m_rs) * np.sin(np.deg2rad(phi)))
+        F_z = g * (m_lh + m_rs) * np.cos(np.deg2rad(phi))
+        F_y = -pc_force
+        M_x = 0.0
+        M_y = (
+            -m_rs * g * np.sin(np.deg2rad(phi)) * l_rs_z
+            + m_rs * g * np.cos(np.deg2rad(phi)) * l_lh / 2
+            + m_lh * g * np.cos(np.deg2rad(phi)) * l_lh
+        )
+        M_z = pc_force * l_lh
+
+        return np.array([F_x, F_y, F_z, M_x, M_y, M_z], dtype=float)
+
+    def _setup_weac_and_calculate_err(experiment, pc_force, h_s_value, rho_values, h_wl_value, E_wl_value, nu_wl_value, l_dw_value, L_value):
+        layers = [
+            Layer(rho=float(rho_values[0]), h=float(h_s_value) / 4),
+            Layer(rho=float(rho_values[1]), h=float(h_s_value) / 4),
+            Layer(rho=float(rho_values[2]), h=float(h_s_value) / 4),
+            Layer(rho=float(rho_values[3]), h=float(h_s_value) / 4),
+        ]
+
+        weak_layer = WeakLayer(
+            rho=float(rho_wl),
+            h=float(h_wl_value),
+            E=float(E_wl_value),
+            nu=float(nu_wl_value),
+            constitutive_model='PlaneStrain'
+        )
+
+        phi = float(experiment['phi'])
+        weight_number = experiment['weight number']
+        a = float(experiment['a'])
+        l_total = float(L_value)
+
+        if pd.notna(weight_number) and phi > 0:
+            l_loading_head = 50.0
+            l_dw = float(l_dw_value)
+            l_load = float(weight_number) * 50.0
+            l1 = l_dw - l_loading_head
+
+            if a < (l_load + l_dw):
+                l2 = a - l_dw
+                l3 = l_load + l_dw - a
+                l4 = l_total - (l_load + l_dw)
+                if l1 > 0:
+                    lengths = [l1, l2, l3, l4]
+                    is_bedded = [False, False, True, True]
+                    is_loaded = [False, True, True, False]
+                else:
+                    lengths = [l2, l3, l4]
+                    is_bedded = [False, True, True]
+                    is_loaded = [True, True, False]
+            else:
+                l2 = l_load
+                l3 = a - l_load - l_dw
+                l4 = l_total - a
+                if l1 > 0:
+                    lengths = [l1, l2, l3, l4]
+                    is_bedded = [False, False, False, True]
+                    is_loaded = [False, True, False, False]
+                else:
+                    lengths = [l2, l3, l4]
+                    is_bedded = [False, False, True]
+                    is_loaded = [True, False, False]
+
+        elif pd.notna(weight_number) and phi < 0:
+            l_dw = float(l_dw_value)
+            l_load = float(weight_number) * 50.0
+            l1 = a
+            l2 = l_total - a - l_dw - l_load
+            l3 = l_load
+            l4 = l_dw
+            lengths = [l1, l2, l3, l4]
+            is_bedded = [False, True, True, True]
+            is_loaded = [False, False, True, False]
+        else:
+            lengths = [a, l_total - a]
+            is_bedded = [False, True]
+            is_loaded = [False, False]
+
+        segments = [
+            Segment(length=l, has_foundation=b, is_loaded=ld, m=0)
+            for l, b, ld in zip(lengths, is_bedded, is_loaded)
+        ]
+
+        total_weights = experiment['total weights'] if 'total weights' in experiment.index else np.nan
+        # Protect against invalid or zero loaded length in the denominator.
+        if pd.notna(weight_number) and pd.notna(total_weights) and float(weight_number) > 0:
+            surface_load = float(total_weights) * 1e-3 * 9810 / (float(weight_number) * 50 * 290)
+        else:
+            surface_load = 0.0
+
+        scenario = ScenarioConfig(
+            system_type='-pst',
+            phi=phi,
+            theta=0,
+            b=290,
+            surface_load=surface_load,
+            load_vector_left=_compute_load_vector(experiment, pc_force, h_s_value, rho_values),
+            load_vector_right=np.array([0, 0, 0, 0, 0, 0], dtype=float),
+        )
+        config = Config(touchdown=False, backend='generalized')
+        model_input = ModelInput(
+            layers=layers,
+            weak_layer=weak_layer,
+            segments=segments,
+            scenario_config=scenario
+        )
+        system = SystemModel(model_input=model_input, config=config)
+        analyzer = Analyzer(system_model=system)
+        gdif = analyzer.differential_ERR(unit='J/m^2')
+
+        return np.array(gdif, dtype=float)
+
+    df_updated = df_masters.copy()
+    df_info_updated = df_masters_info.copy()
+
+    g_columns = ['Gc', 'G1c', 'G2c', 'G3c']
+    g_unc_columns = [f"{col}_uncertainty" for col in g_columns]
+
+    for col in g_columns:
+        if col not in df_updated.columns:
+            df_updated[col] = np.nan
+            print(f"Initialized missing column: {col}")
+    for col in g_unc_columns:
+        if col not in df_updated.columns:
+            df_updated[col] = np.nan
+            print(f"Initialized missing column: {col}")
+
+    pst_afn_set = {1, 2, 3, 4, 5, 6, 7}
+    pst_mask = df_updated['AFN'].apply(_afn_as_int).isin(pst_afn_set) if 'AFN' in df_updated.columns else pd.Series(False, index=df_updated.index)
+
+    if force_overwrite:
+        target_mask = pd.Series(True, index=df_updated.index)
+        print("force_overwrite=True: recomputing G-values and uncertainties for all rows with valid inputs.")
+    else:
+        # Always update AFN 1..7 as PST rows (P_c forced to 0), even if values already exist.
+        target_mask = df_updated[g_columns + g_unc_columns].isna().any(axis=1) | pst_mask
+        print("force_overwrite=False: computing only rows with missing G-values/uncertainties.")
+    if pst_mask.any():
+        print(
+            f"PST override active for AFN in {sorted(pst_afn_set)}: "
+            "calculating with P_c[1]=0 (same PST setup, without out-of-plane load from fracture force)."
+        )
+
+    computed = 0
+    skipped_invalid_pc = 0
+    skipped_no_target = 0
+    failed = 0
+    pst_computed = 0
+
+    for idx, experiment in df_updated.iterrows():
+        if not bool(target_mask.loc[idx]):
+            skipped_no_target += 1
+            continue
+
+        afn_int = _afn_as_int(experiment['AFN']) if 'AFN' in experiment.index else None
+        is_pst_afn = afn_int in pst_afn_set
+
+        if is_pst_afn:
+            pc_force = 0.0
+        else:
+            pc_force = _extract_pc_force(experiment['P_c']) if 'P_c' in experiment.index else np.nan
+            if pd.isna(pc_force):
+                skipped_invalid_pc += 1
+                continue
+
+        try:
+            # Build uncertain scalar inputs (independent uncertainties).
+            pc_u = ufloat(float(pc_force), abs(float(pc_force)) * abs(float(pc_rel_err)))
+            h_s_u = ufloat(float(experiment['h_s']), abs(float(h_s_err)))
+            rho_1_u = ufloat(float(experiment['rho_1']), abs(float(rho_err)))
+            rho_2_u = ufloat(float(experiment['rho_2']), abs(float(rho_err)))
+            rho_3_u = ufloat(float(experiment['rho_3']), abs(float(rho_err)))
+            rho_4_u = ufloat(float(experiment['rho_4']), abs(float(rho_err)))
+            h_wl_u = ufloat(float(h_wl), abs(float(h_wl_err)))
+            E_wl_u = ufloat(float(E_wl), abs(float(E_wl_err)))
+            nu_wl_u = ufloat(float(nu_wl), abs(float(nu_wl_err)))
+
+            l_dw_nominal = float(experiment['l_dw']) if pd.notna(experiment['l_dw']) else 0.0
+            L_nominal = float(experiment['L']) if pd.notna(experiment['L']) else 10000.0
+            l_dw_u = ufloat(l_dw_nominal, abs(float(l_dw_err)) if pd.notna(experiment['l_dw']) else 0.0)
+            L_u = ufloat(L_nominal, abs(float(L_err)) if pd.notna(experiment['L']) else 0.0)
+
+            base_values = {
+                'pc_force': float(pc_u.nominal_value),
+                'h_s': _ensure_positive(h_s_u.nominal_value),
+                'rho_1': float(rho_1_u.nominal_value),
+                'rho_2': float(rho_2_u.nominal_value),
+                'rho_3': float(rho_3_u.nominal_value),
+                'rho_4': float(rho_4_u.nominal_value),
+                'h_wl': _ensure_positive(h_wl_u.nominal_value),
+                'E_wl': _ensure_positive(E_wl_u.nominal_value),
+                'nu_wl': _clip_nu(nu_wl_u.nominal_value),
+                'l_dw': _ensure_positive(l_dw_u.nominal_value),
+                'L': _ensure_positive(L_u.nominal_value),
+            }
+
+            def _solve_with(values):
+                rho_vals = [values['rho_1'], values['rho_2'], values['rho_3'], values['rho_4']]
+                return _setup_weac_and_calculate_err(
+                    experiment=experiment,
+                    pc_force=values['pc_force'],
+                    h_s_value=values['h_s'],
+                    rho_values=rho_vals,
+                    h_wl_value=values['h_wl'],
+                    E_wl_value=values['E_wl'],
+                    nu_wl_value=values['nu_wl'],
+                    l_dw_value=values['l_dw'],
+                    L_value=values['L'],
+                )
+
+            gdif_nom = _solve_with(base_values)
+            if len(gdif_nom) < 4:
+                raise ValueError("WEAC returned fewer than 4 fracture-energy values.")
+
+            # First-order propagation with independent inputs:
+            # sigma_G^2 = sum_i ((dG/dx_i) * sigma_x_i)^2
+            uncertainty_specs = {
+                'pc_force': float(pc_u.std_dev),
+                'h_s': float(h_s_u.std_dev),
+                'rho_1': float(rho_1_u.std_dev),
+                'rho_2': float(rho_2_u.std_dev),
+                'rho_3': float(rho_3_u.std_dev),
+                'rho_4': float(rho_4_u.std_dev),
+                'h_wl': float(h_wl_u.std_dev),
+                'E_wl': float(E_wl_u.std_dev),
+                'nu_wl': float(nu_wl_u.std_dev),
+                'l_dw': float(l_dw_u.std_dev),
+                'L': float(L_u.std_dev),
+            }
+
+            variance = np.zeros(4, dtype=float)
+            for var_name, sigma in uncertainty_specs.items():
+                if sigma <= 0:
+                    continue
+
+                center = float(base_values[var_name])
+                plus_values = dict(base_values)
+                minus_values = dict(base_values)
+                plus_values[var_name] = center + sigma
+                minus_values[var_name] = center - sigma
+
+                if var_name in ('h_s', 'h_wl', 'E_wl', 'l_dw', 'L'):
+                    plus_values[var_name] = _ensure_positive(plus_values[var_name])
+                    minus_values[var_name] = _ensure_positive(minus_values[var_name])
+                elif var_name == 'nu_wl':
+                    plus_values[var_name] = _clip_nu(plus_values[var_name])
+                    minus_values[var_name] = _clip_nu(minus_values[var_name])
+
+                if plus_values[var_name] == minus_values[var_name]:
+                    continue
+
+                g_plus = None
+                g_minus = None
+                try:
+                    g_plus = _solve_with(plus_values)
+                except Exception:
+                    pass
+                try:
+                    g_minus = _solve_with(minus_values)
+                except Exception:
+                    pass
+
+                if g_plus is not None and g_minus is not None:
+                    deriv = (g_plus[:4] - g_minus[:4]) / (plus_values[var_name] - minus_values[var_name])
+                elif g_plus is not None:
+                    step = plus_values[var_name] - center
+                    if step == 0:
+                        continue
+                    deriv = (g_plus[:4] - gdif_nom[:4]) / step
+                elif g_minus is not None:
+                    step = center - minus_values[var_name]
+                    if step == 0:
+                        continue
+                    deriv = (gdif_nom[:4] - g_minus[:4]) / step
+                else:
+                    continue
+
+                variance += (deriv * sigma) ** 2
+
+            gdif_unc = np.sqrt(variance)
+
+            df_updated.loc[idx, g_columns] = gdif_nom[:4]
+            df_updated.loc[idx, g_unc_columns] = gdif_unc[:4]
+            computed += 1
+            if is_pst_afn:
+                pst_computed += 1
+        except Exception as e:
+            afn_val = experiment['AFN'] if 'AFN' in experiment.index else idx
+            print(f"Warning: Could not compute WEAC ERR for AFN/index {afn_val}: {e}")
+            failed += 1
+
+    metadata_rows = {
+        'Gc': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'critical differential fracture energy',
+            'description': 'Differential fracture energy at crack initiation from WEAC (Mode III).'
+        },
+        'G1c': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'mode I differential fracture energy',
+            'description': 'Mode I component of differential fracture energy at crack initiation from WEAC.'
+        },
+        'G2c': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'mode II differential fracture energy',
+            'description': 'Mode II component of differential fracture energy at crack initiation from WEAC.'
+        },
+        'G3c': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'mode III differential fracture energy',
+            'description': 'Mode III component of differential fracture energy at crack initiation from WEAC.'
+        },
+        'Gc_uncertainty': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'uncertainty of critical differential fracture energy',
+            'description': 'Propagated one-sigma uncertainty of Gc from independent input uncertainties.'
+        },
+        'G1c_uncertainty': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'uncertainty of mode I differential fracture energy',
+            'description': 'Propagated one-sigma uncertainty of G1c from independent input uncertainties.'
+        },
+        'G2c_uncertainty': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'uncertainty of mode II differential fracture energy',
+            'description': 'Propagated one-sigma uncertainty of G2c from independent input uncertainties.'
+        },
+        'G3c_uncertainty': {
+            'units': 'J/m^2',
+            'data_type': 'Float',
+            'long_name': 'uncertainty of mode III differential fracture energy',
+            'description': 'Propagated one-sigma uncertainty of G3c from independent input uncertainties.'
+        }
+    }
+
+    if force_overwrite and 'Abreviation' in df_info_updated.columns:
+        duplicate_metadata_columns = df_info_updated[
+            df_info_updated.duplicated(subset=['Abreviation'], keep=False)
+        ]['Abreviation'].unique()
+        if len(duplicate_metadata_columns) > 0:
+            print(f"Found duplicate metadata abbreviations: {list(duplicate_metadata_columns)}")
+            df_info_updated = df_info_updated.drop_duplicates(subset=['Abreviation'], keep='first')
+            print("Removed duplicate metadata entries (kept first occurrence).")
+
+    for col_name, col_info in metadata_rows.items():
+        existing_row = df_info_updated[df_info_updated['Abreviation'] == col_name]
+        if existing_row.empty:
+            new_row = pd.DataFrame({
+                'Abreviation': [col_name],
+                'Units': [col_info['units']],
+                'Data_Type': [col_info['data_type']],
+                'Long Name': [col_info['long_name']],
+                'Description': [col_info['description']]
+            })
+            df_info_updated = pd.concat([df_info_updated, new_row], ignore_index=True)
+            print(f"Added metadata row for {col_name}")
+        else:
+            row_idx = existing_row.index[0]
+            df_info_updated.at[row_idx, 'Units'] = col_info['units']
+            df_info_updated.at[row_idx, 'Data_Type'] = col_info['data_type']
+            df_info_updated.at[row_idx, 'Long Name'] = col_info['long_name']
+            df_info_updated.at[row_idx, 'Description'] = col_info['description']
+            print(f"Updated metadata row for {col_name}")
+
+    df_info_updated = df_info_updated.sort_values('Abreviation', ascending=True).reset_index(drop=True)
+
+    try:
+        _atomic_write_parquet(df_updated, parquet_path_masters)
+        _atomic_write_parquet(df_info_updated, parquet_path_info)
+        print("Saved updated master parquet files using atomic write.")
+    except Exception as e:
+        print(f"Error while writing parquet files atomically: {e}")
+        return None, None
+
+    print("\nWEAC ERR calculation summary:")
+    print(f"  - Rows computed (values + uncertainties): {computed}")
+    print(f"  - Rows computed with PST override (AFN 1..7, P_c[1]=0): {pst_computed}")
+    print(f"  - Rows skipped (no target update required): {skipped_no_target}")
+    print(f"  - Rows skipped (invalid/missing P_c[1]): {skipped_invalid_pc}")
+    print(f"  - Rows failed during WEAC solve: {failed}")
+
+    return df_updated, df_info_updated
+
+    
 def add_columns_to_data(raw_data_path, raw_info_data_path, new_columns_info, appendix="", save=True):
     """
     Add new columns to data and metadata DataFrames and save as Parquet files.

@@ -1,6 +1,7 @@
 # Core data processing
 pandas>=2.0.0
 numpy>=1.24.0
+uncertainties>=3.2.2
 
 # Excel file support
 openpyxl>=3.1.0
