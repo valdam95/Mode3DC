@@ -6,6 +6,7 @@ including comprehensive plotting configuration and styling.
 """
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
 import math
@@ -18,6 +19,7 @@ from ipywidgets import (
 )
 from IPython.display import display
 import layout as lo
+import numpy as np
 
 # ============================================================================
 # PLOTTING CONFIGURATION
@@ -25,8 +27,26 @@ import layout as lo
 
 # Global visualization settings
 GLOBAL_FONT_SIZE = 20
-GLOBAL_FIG_SIZE = (8, 8)  # Quadratic figure
+GLOBAL_FIG_SIZE = (8, 7.5)
 GLOBAL_DPI = 100
+COLORS = lo.COLORS
+
+# ============================================================================
+# GLOBAL PLOT SERIES COLORS AND MARKERS
+# ============================================================================
+
+PLOTLINE_ALPHA = 0.8
+PLOTPOINT_ALPHA = 0.8
+
+TICK_WIDTH = 1
+TICK_LENGTH = 10
+TICK_COLOR = 'grey'
+FRAME_THICKNESS = 1
+
+MARKER_FC1 = '^'
+MARKER_FC2 = 's'
+MARKER_RG1 = 'o'
+MARKER_RG2 = 'D'
 
 # Default color cycle for plots
 DEFAULT_COLOR_CYCLE = [
@@ -40,7 +60,7 @@ DEFAULT_COLOR_CYCLE = [
 
 # General plotting styles
 PLOT_STYLES = {
-    'figure_size': (10, 6),
+    'figure_size': (8, 7.5),
     'dpi': 300,
     'font_size': 12,
     'line_width': 2,
@@ -69,7 +89,7 @@ CRACK_ANNOTATOR_STYLES = {
 
 # Visualization-specific styles (for crack heatmap, rose diagram, etc.)
 VISUALIZATION_STYLES = {
-    'figure_size': (8, 8),  # Quadratic
+    'figure_size': (8, 7.5),
     'dpi': 100,
     'font_size': 20,
     'line_width': 3,
@@ -82,6 +102,13 @@ VISUALIZATION_STYLES = {
     'legend_edgecolor': 'none',
     'tick_direction': 'in',  # Ticks pointing inside
     'spine_visibility': {'top': False, 'right': False, 'bottom': True, 'left': True}
+}
+
+# Default error-bar layout (color stays local to each plot/function)
+ERRORBAR_STYLES = {
+    'line_width': 1,
+    'cap_size': 0,
+    'alpha': 0.5,
 }
 
 # ============================================================================
@@ -258,12 +285,68 @@ def create_legend_with_style(ax, style_config=None):
     
     return legend
 
+
+def _alpha_equivalent_color(color, alpha, background='white'):
+    """
+    Return a solid color equivalent to drawing `color` with `alpha` on `background`.
+    """
+    try:
+        fg = np.array(mcolors.to_rgb(color), dtype=float)
+        bg = np.array(mcolors.to_rgb(background), dtype=float)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        mixed = alpha * fg + (1.0 - alpha) * bg
+        return tuple(mixed.tolist())
+    except Exception:
+        return color
+
+
+def draw_errorbar_layout(
+    ax,
+    x,
+    y,
+    xerr=None,
+    yerr=None,
+    color='0.45',
+    zorder=1,
+    use_alpha_equivalent=True,
+):
+    """
+    Draw uncapped error bars with project-default layout while preserving local color.
+    """
+    if use_alpha_equivalent:
+        try:
+            error_color = _alpha_equivalent_color(color, ERRORBAR_STYLES['alpha'])
+        except NameError:
+            # Fallback for notebook/string execution where helper may be out of scope.
+            import matplotlib.colors as _mcolors
+            fg = np.array(_mcolors.to_rgb(color), dtype=float)
+            bg = np.array(_mcolors.to_rgb('white'), dtype=float)
+            a = float(np.clip(ERRORBAR_STYLES['alpha'], 0.0, 1.0))
+            error_color = tuple((a * fg + (1.0 - a) * bg).tolist())
+        error_alpha = 1.0
+    else:
+        error_color = color
+        error_alpha = ERRORBAR_STYLES['alpha']
+
+    ax.errorbar(
+        x,
+        y,
+        xerr=xerr,
+        yerr=yerr,
+        fmt='none',
+        ecolor=error_color,
+        elinewidth=ERRORBAR_STYLES['line_width'],
+        capsize=ERRORBAR_STYLES['cap_size'],
+        alpha=error_alpha,
+        zorder=zorder,
+    )
+
 # ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
 
 
-def distance_force_plot(df_or_path, title="Distance vs Force", figsize=None, dpi=100):
+def distance_force_plot(df_or_path, title="Distance vs Force", figsize=(8, 7.5), dpi=100):
     """
     Create a plot showing distance vs force curves.
     
@@ -280,7 +363,7 @@ def distance_force_plot(df_or_path, title="Distance vs Force", figsize=None, dpi
         Title for the plot (default: "Distance vs Force")
         
     figsize : tuple, optional
-        Figure size in inches (default: uses VISUALIZATION_STYLES['figure_size'])
+        Figure size in inches (default: (8, 7.5))
         
     dpi : int, optional
         Figure resolution (default: 100)
@@ -408,7 +491,12 @@ def extract_pc_force(value):
         return value[1]
     return None
 
-def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated P_e vs. Actual P_c"):
+def plot_pe_vs_afn_compare(
+    parquet_path,
+    title="Peak Force Comparison: Estimated P_e vs. Actual P_c",
+    alpha=0.8,
+    marker_size=2.3,
+):
     """
     Scatter comparison of estimated peak load P_e vs. actual signal peak P_c.
     - Colors encode measurement date (layout palette).
@@ -438,28 +526,35 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
         print("DataFrame is empty.")
         return None
     
-    required = {'AFN', 'P_e', 'P_c', 'date'}
+    required = {'AFN', 'P_c', 'date'}
     if not required.issubset(df.columns):
         missing = ', '.join(required - set(df.columns))
         print(f"Missing required columns: {missing}")
         return None
+    has_pe = 'P_e' in df.columns
     
     # Check if phi column exists (optional)
     has_phi = 'phi' in df.columns
     
     # Select columns for plotting (include phi if available)
-    plot_columns = ['AFN', 'P_e', 'P_c', 'date']
+    plot_columns = ['AFN', 'P_c', 'date']
+    if has_pe:
+        plot_columns.append('P_e')
     if has_phi:
         plot_columns.append('phi')
     
-    plot_data = df[plot_columns].dropna(subset=['AFN', 'P_e', 'P_c', 'date'])
+    # Keep rows where actual signal peak can be plotted; P_e is optional.
+    plot_data = df[plot_columns].dropna(subset=['AFN', 'P_c', 'date'])
     if plot_data.empty:
-        print("No rows with non-null AFN, P_e, P_c, and date.")
+        print("No rows with non-null AFN, P_c, and date.")
         return None
     
+    plot_data['AFN'] = pd.to_numeric(plot_data['AFN'], errors='coerce')
     plot_data['date'] = pd.to_datetime(plot_data['date'], errors='coerce')
     plot_data['P_c_force'] = plot_data['P_c'].apply(extract_pc_force)
-    plot_data = plot_data.dropna(subset=['date', 'P_c_force'])
+    if has_pe:
+        plot_data['P_e'] = pd.to_numeric(plot_data['P_e'], errors='coerce')
+    plot_data = plot_data.dropna(subset=['AFN', 'date', 'P_c_force'])
     if plot_data.empty:
         print("No valid P_c force values found.")
         return None
@@ -481,7 +576,7 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
     plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
     plt.rcParams['mathtext.default'] = 'it'
 
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 7.5), dpi=100)
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
     
@@ -514,22 +609,27 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
                 color=color,
                 marker=marker,
                 alpha=face_alpha,
+                s=marker_size ** 2 * 10,
                 edgecolors=edge_col,
                 linewidths=1.0,
                 label=label
             )
             return True
         
-        if scatter_points(subset_pos, 'o', 0.9, 'white', date_label):
+        if scatter_points(subset_pos, 'o', alpha, 'white', date_label):
             label_added = True
-        if scatter_points(subset_neg, 'o', 0.9, 'black', None if label_added else date_label):
+        if scatter_points(subset_neg, 'o', alpha, 'black', None if label_added else date_label):
             label_added = True
-        if scatter_points(subset_na, 'o', 0.9, 'white', None if label_added else date_label):
+        if scatter_points(subset_na, 'o', alpha, 'white', None if label_added else date_label):
             label_added = True
         
-        scatter_points(subset_pos, 'D', 0.3, 'white')
-        scatter_points(subset_neg, 'D', 0.3, 'black')
-        scatter_points(subset_na, 'D', 0.3, 'white')
+        if has_pe:
+            subset_pos_pe = subset_pos.dropna(subset=['P_e'])
+            subset_neg_pe = subset_neg.dropna(subset=['P_e'])
+            subset_na_pe = subset_na.dropna(subset=['P_e'])
+            scatter_points(subset_pos_pe, 'D', alpha, 'white')
+            scatter_points(subset_neg_pe, 'D', alpha, 'black')
+            scatter_points(subset_na_pe, 'D', alpha, 'white')
         
         # Add AFN labels next to points
         for _, row in subset.iterrows():
@@ -564,8 +664,11 @@ def plot_pe_vs_afn_compare(parquet_path, title="Peak Force Comparison: Estimated
     # Legend for marker meaning
     marker_handles = [
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=8, label='actual'),
-        mlines.Line2D([], [], color='gray', marker='D', linestyle='None', markersize=8, label='estimate')
     ]
+    if has_pe:
+        marker_handles.append(
+            mlines.Line2D([], [], color='gray', marker='D', linestyle='None', markersize=8, label='estimate')
+        )
     marker_legend = ax.legend(handles=marker_handles, loc='lower right')
     ax.add_artist(date_legend)
     
@@ -947,7 +1050,7 @@ def plot_column_over_afn(parquet_path, title=None):
         plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
         plt.rcParams['mathtext.default'] = 'it'
 
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+        fig, ax = plt.subplots(figsize=(8, 7.5), dpi=100)
         fig.patch.set_facecolor('white')
         ax.set_facecolor('white')
         
@@ -963,9 +1066,9 @@ def plot_column_over_afn(parquet_path, title=None):
                 subset[column_name],
                 c=color,
                 marker='o',
-                alpha=0.9,
+                alpha=0.8,
                 edgecolors='none',  # No outlines - hardcoded
-                s=60,  # Marker size
+                s=2.3 ** 2 * 10,
                 label=date_label
             )
             
@@ -1026,13 +1129,24 @@ def plot_column_over_afn(parquet_path, title=None):
     return None
 
 
-def plot_g_scatter_with_uncertainty(
+def plot_mode_I_III_interaction(
     df_or_path,
     x_component='G1',
     y_component='G2',
+    depict_AFN=False,
+    mark_infinite=False,
+    alpha=0.8,
+    marker_size=2.3,
+    tick_width=1,
+    tick_length=10,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=1,
+    x_lim=None,
+    y_lim=None,
     title=None,
-    figsize=(7, 6),
-    dpi=120,
+    figsize=(8, 7.5),
+    dpi=100,
 ):
     """
     Quick scatter plot for G-components with uncertainty whiskers (no end caps).
@@ -1045,9 +1159,32 @@ def plot_g_scatter_with_uncertainty(
         One of 'G1', 'G2', 'G3' used for x-axis.
     y_component : str, default 'G2'
         One of 'G1', 'G2', 'G3' used for y-axis.
+    depict_AFN : bool, default False
+        If True, write AFN labels next to each datapoint (requires 'AFN' column).
+    mark_infinite : bool, default False
+        If True, points with invalid `L` (None/NaN or non-numeric type) are
+        highlighted with a red outline.
+    alpha : float, default 0.8
+        Marker and errorbar transparency.
+    marker_size : float, default 2.3
+        Marker size scale.
+    tick_width : float, default 1
+        Width of tick marks.
+    tick_length : float, default 10
+        Length of tick marks in points.
+    labelpad_x : float, default 15
+        Padding (spacing) between x-axis label and tick labels.
+    labelpad_y : float, default 15
+        Padding (spacing) between y-axis label and tick labels.
+    frame_thickness : float, default 1
+        Thickness (linewidth) of the plot frame (spines).
+    x_lim : tuple, optional
+        x-axis limits.
+    y_lim : tuple, optional
+        y-axis limits.
     title : str, optional
         Plot title.
-    figsize : tuple, default (7, 6)
+    figsize : tuple, default (8, 7.5)
         Figure size.
     dpi : int, default 120
         Figure DPI.
@@ -1095,6 +1232,26 @@ def plot_g_scatter_with_uncertainty(
             # If duplicate column names exist, use the first occurrence.
             raw_col = raw_col.iloc[:, 0]
         plot_df[col] = pd.to_numeric(raw_col, errors='coerce')
+    if depict_AFN and 'AFN' in df.columns:
+        raw_afn_col = df['AFN']
+        if isinstance(raw_afn_col, pd.DataFrame):
+            raw_afn_col = raw_afn_col.iloc[:, 0]
+        plot_df['AFN'] = raw_afn_col.astype(str)
+    elif depict_AFN:
+        print("Warning: depict_AFN=True but 'AFN' column was not found. Labels are skipped.")
+    if mark_infinite and 'L' in df.columns:
+        raw_l_col = df['L']
+        if isinstance(raw_l_col, pd.DataFrame):
+            raw_l_col = raw_l_col.iloc[:, 0]
+
+        def _is_valid_numeric_value(v):
+            if pd.isna(v) or isinstance(v, bool):
+                return False
+            return isinstance(v, (int, float, np.integer, np.floating))
+
+        plot_df['L_invalid'] = ~raw_l_col.apply(_is_valid_numeric_value)
+    elif mark_infinite:
+        print("Warning: mark_infinite=True but 'L' column was not found. Red outlines are skipped.")
     plot_df = plot_df.dropna(subset=[x_col, y_col])
     if plot_df.empty:
         print("No valid rows to plot.")
@@ -1113,65 +1270,181 @@ def plot_g_scatter_with_uncertainty(
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
 
-    ax.errorbar(
-        plot_df[x_col],
-        plot_df[y_col],
-        xerr=plot_df[x_err_col],
-        yerr=plot_df[y_err_col],
-        fmt='none',
-        ecolor='0.45',
-        elinewidth=1.0,
-        capsize=0,  # no horizontal end lines ("whiskers without line in the end")
-        alpha=0.85,
+    def _get_alpha_equiv_color_from_base(base_color, alpha_val):
+        # Match the behavior from the ERR polar fit example:
+        # use precomputed alpha-equivalent colors when available.
+        color_name = None
+        for name, value in lo.COLORS.items():
+            if str(value).lower() == str(base_color).lower():
+                color_name = name
+                break
+        if (
+            color_name is not None
+            and hasattr(lo, 'COLORS_ALPHA_EQUIV')
+            and color_name in lo.COLORS_ALPHA_EQUIV
+            and alpha_val in lo.COLORS_ALPHA_EQUIV[color_name]
+        ):
+            return lo.COLORS_ALPHA_EQUIV[color_name][alpha_val]
+        return _alpha_equivalent_color(base_color, alpha_val)
+
+    base_color = lo.COLORS['blue']
+    errorbar_color = _get_alpha_equiv_color_from_base(base_color, 0.5)
+
+    # Plot error bars first (background), same style as requested example.
+    x_vals = plot_df[x_col].to_numpy(dtype=float)
+    y_vals = plot_df[y_col].to_numpy(dtype=float)
+    x_err_vals = plot_df[x_err_col].to_numpy(dtype=float)
+    y_err_vals = plot_df[y_err_col].to_numpy(dtype=float)
+    for i in range(len(x_vals)):
+        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
+                [y_vals[i], y_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i], x_vals[i]],
+                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+
+    # Plot markers after error bars with alpha-equivalent marker color.
+    ax.scatter(
+        x_vals,
+        y_vals,
+        c=base_color,
+        s=marker_size ** 2 * 10,
+        alpha=0.8,
+        edgecolors='none',
         zorder=1,
     )
 
-    ax.scatter(
-        plot_df[x_col],
-        plot_df[y_col],
-        c=lo.COLORS['blue'],
-        s=40,
-        alpha=0.9,
-        edgecolors='none',
-        zorder=2,
-    )
+    if mark_infinite and 'L_invalid' in plot_df.columns:
+        invalid_mask = plot_df['L_invalid'].fillna(False)
+        if invalid_mask.any():
+            ax.scatter(
+                plot_df.loc[invalid_mask, x_col],
+                plot_df.loc[invalid_mask, y_col],
+                facecolors='none',
+                edgecolors='red',
+                linewidths=1.5,
+                s=(marker_size ** 2 * 10) * 1.15,
+                alpha=alpha,
+                zorder=3,
+            )
 
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_title(title or f"{y_col} vs {x_col} with uncertainty")
+    ax.set_xlabel(
+        r'Mode I energy release rate $\mathcal{G}_{\mathrm{I}}$ (J/m$^2$) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x,
+        color='black',
+    )
+    ax.set_ylabel(
+        r'Mode III energy release rate $\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y,
+        color='black',
+    )
+    if x_lim is not None:
+        ax.set_xlim(x_lim)
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
+    if title is not None:
+        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
+
+    if depict_AFN and 'AFN' in plot_df.columns:
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        x_off = max((x_max - x_min) * 0.008, 1e-9)
+        y_off = max((y_max - y_min) * 0.008, 1e-9)
+        for _, row in plot_df.iterrows():
+            ax.text(
+                row[x_col] + x_off,
+                row[y_col] + y_off,
+                row['AFN'],
+                fontsize=max(VISUALIZATION_STYLES['font_size'] - 4, 8),
+                color='black',
+                alpha=0.9,
+                zorder=3,
+            )
+
     # Keep identical data scaling on both axes so geometric distances are comparable.
     ax.set_aspect('equal', adjustable='box')
     ax.tick_params(
         axis='both', which='major',
         labelsize=VISUALIZATION_STYLES['font_size'],
-        pad=10, width=1, length=10,
-        bottom=True, top=True, left=True, right=True,
-        labelcolor='black', color='grey',
+        pad=10,
+        width=tick_width,
+        length=tick_length,
+        color=TICK_COLOR,
+        bottom=True, top=True, labeltop=False,
+        left=True, right=True, labelright=False,
+        labelcolor='black',
     )
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(frame_thickness)
     ax.grid(False)
     plt.tight_layout()
     plt.show()
     return None
 
 
-def plot_giii_ratio_vs_g(
+def plot_GIII_ratio_vs_G(
     df_or_path,
-    title="Mode III ratio vs (G1+G3)",
-    figsize=(8, 6),
-    dpi=120,
+    x_lim=(0,np.pi/2),
+    title=None,
+    figsize=(8, 7.5),
+    dpi=100,
     show_legend=False,
+    alpha=PLOTPOINT_ALPHA,
+    marker_size=2.3,
+    tick_width=TICK_WIDTH,
+    tick_length=TICK_LENGTH,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=FRAME_THICKNESS,
+    Gc_lim=0.8,
+    y_lim=None,
 ):
     """
-    Plot Mode III ratio over (G1+G3):
-      x = (G1+G3)
-      y = GIII/(G1+G3)
+    Plot elliptic radial coordinate over elliptic mode mixity angle:
+      x = phi^G = arctan((GIII*GIc)/(GI*GIIIc))
+      y = r^G
 
     Uses:
     - GIII = G3c
     - GI + GIII = G1c + G3c
+
+    Parameters
+    ----------
+    alpha : float, default 0.8
+        Marker transparency.
+    marker_size : float, default 2.3
+        Marker size scale.
+    tick_width : float, default 1
+        Width (thickness) of the tick marks.
+    tick_length : float, default 10
+        Length of the tick marks in points.
+    labelpad_x : float, default 15
+        Padding (spacing) between x-axis label and tick labels.
+    labelpad_y : float, default 15
+        Padding (spacing) between y-axis label and tick labels.
+    frame_thickness : float, default 1
+        Thickness (linewidth) of the plot frame (spines).
+    Gc_lim : float, default 0.9
+        Threshold to compute fixed critical values from data means:
+        - GIIIc = mean(G3c) for rows with G3c/(G1c+G3c) >= Gc_lim
+        - GIc   = mean(G1c) for rows with G1c/(G1c+G3c) >= Gc_lim
+    y_lim : tuple, optional
+        y-axis limits as (ymin, ymax). If None, automatic limits are used.
     """
     if isinstance(df_or_path, pd.DataFrame):
         df = df_or_path.copy()
@@ -1183,7 +1456,7 @@ def plot_giii_ratio_vs_g(
             print(f"Error loading parquet: {e}")
             return None
 
-    required_cols = ['G1c', 'G2c', 'G3c']
+    required_cols = ['G1c', 'G3c']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         print(f"Error: Missing required columns: {missing_cols}")
@@ -1192,6 +1465,16 @@ def plot_giii_ratio_vs_g(
     plot_df = df.copy()
     plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce')
     plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce')
+    g1_unc_col = 'G1c_uncertainty' if 'G1c_uncertainty' in plot_df.columns else None
+    g3_unc_col = 'G3c_uncertainty' if 'G3c_uncertainty' in plot_df.columns else None
+    if g1_unc_col is not None:
+        plot_df['G1c_unc'] = pd.to_numeric(plot_df[g1_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+    else:
+        plot_df['G1c_unc'] = 0.0
+    if g3_unc_col is not None:
+        plot_df['G3c_unc'] = pd.to_numeric(plot_df[g3_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+    else:
+        plot_df['G3c_unc'] = 0.0
 
     plot_df['G13_total'] = plot_df['G1c'] + plot_df['G3c']
     plot_df = plot_df.dropna(subset=['G1c', 'G3c', 'G13_total'])
@@ -1200,7 +1483,249 @@ def plot_giii_ratio_vs_g(
         print("No valid rows to plot (requires G1+G3 > 0).")
         return None
 
-    plot_df['GIII_over_G13'] = plot_df['G3c'] / plot_df['G13_total']
+    # Fixed GIc/GIIIc from Gc_lim subsets (uncertainty-weighted means),
+    # with robust full-data fallback.
+    ratio_iii = plot_df['G3c'] / plot_df['G13_total']
+    ratio_i = plot_df['G1c'] / plot_df['G13_total']
+    ratio_iii_mask = ratio_iii >= Gc_lim
+    ratio_i_mask = ratio_i >= Gc_lim
+
+    def _weighted_mean_with_unc(x_series, sx_series, min_sigma=1e-6):
+        x = pd.to_numeric(x_series, errors='coerce').to_numpy(dtype=float)
+        sx = pd.to_numeric(sx_series, errors='coerce').to_numpy(dtype=float)
+        mask = np.isfinite(x) & np.isfinite(sx) & (sx >= 0.0)
+        if not np.any(mask):
+            return np.nan, np.nan
+        x = x[mask]
+        sx = np.clip(sx[mask], min_sigma, None)
+        w = 1.0 / (sx ** 2)
+        mu = float(np.sum(w * x) / np.maximum(np.sum(w), 1e-12))
+        mu_unc = float(np.sqrt(1.0 / np.maximum(np.sum(w), 1e-12)))
+        return mu, mu_unc
+
+    gi_subset = plot_df.loc[ratio_i_mask] if ratio_i_mask.any() else plot_df
+    giii_subset = plot_df.loc[ratio_iii_mask] if ratio_iii_mask.any() else plot_df
+
+    gic_ref, gic_unc_weighted = _weighted_mean_with_unc(gi_subset['G1c'], gi_subset['G1c_unc'])
+    giiic_ref, giiic_unc_weighted = _weighted_mean_with_unc(giii_subset['G3c'], giii_subset['G3c_unc'])
+
+    if not np.isfinite(gic_ref) or gic_ref <= 0:
+        gic_ref = 1.0
+    if not np.isfinite(gic_unc_weighted):
+        gic_unc_weighted = 0.0
+    if not np.isfinite(giiic_ref) or giiic_ref <= 0:
+        giiic_ref = 1.0
+    if not np.isfinite(giiic_unc_weighted):
+        giiic_unc_weighted = 0.0
+
+    # Prepare data and weights for exponent-law diagnostics.
+    g1_vals = plot_df['G1c'].to_numpy(dtype=float)
+    g3_vals = plot_df['G3c'].to_numpy(dtype=float)
+    sg1_vals = plot_df['G1c_unc'].to_numpy(dtype=float)
+    sg3_vals = plot_df['G3c_unc'].to_numpy(dtype=float)
+    sigma_weight = np.sqrt(sg1_vals ** 2 + sg3_vals ** 2)
+    weights = 1.0 / np.maximum(sigma_weight, 1e-6) ** 2
+    weights = weights / np.maximum(np.sum(weights), 1e-12)
+
+    def _a_value(n_val, m_val):
+        u = np.clip(g1_vals / max(gic_ref, 1e-12), 0.0, None)
+        v = np.clip(g3_vals / max(giiic_ref, 1e-12), 0.0, None)
+        return np.power(u, n_val) + np.power(v, m_val)
+
+    def _r_value():
+        # Elliptic radial coordinate used for plotting:
+        # r^G = sqrt((GI/GIc)^2 + (GIII/GIIIc)^2)
+        u = np.clip(g1_vals / max(gic_ref, 1e-12), 0.0, None)
+        v = np.clip(g3_vals / max(giiic_ref, 1e-12), 0.0, None)
+        return np.sqrt(u ** 2 + v ** 2)
+
+    def _objective_nm(n_val, m_val):
+        if n_val < 1.0 or n_val > 10.0 or m_val < 1.0 or m_val > 10.0:
+            return np.inf
+        a_tmp = _a_value(n_val=n_val, m_val=m_val)
+        residual = a_tmp - 1.0
+        return float(np.sum(weights * residual ** 2))
+
+    def _r_opt_from_phi(phi_val, n_val, m_val):
+        c = max(np.cos(phi_val), 1e-12)
+        s = max(np.sin(phi_val), 1e-12)
+
+        def f(rv):
+            return (rv * c) ** n_val + (rv * s) ** m_val - 1.0
+
+        lo_r, hi_r = 0.0, 1.0
+        while f(hi_r) < 0.0 and hi_r < 1e6:
+            hi_r *= 2.0
+        for _ in range(60):
+            mid = 0.5 * (lo_r + hi_r)
+            if f(mid) < 0.0:
+                lo_r = mid
+            else:
+                hi_r = mid
+        return 0.5 * (lo_r + hi_r)
+
+    def _calc_case_stats(n_val, m_val, case_name, method='fixed_exponent', objective_override=None):
+        n_val = float(n_val)
+        m_val = float(m_val)
+        objective_value = _objective_nm(n_val, m_val)
+        if objective_override is not None and np.isfinite(objective_override):
+            objective_value = float(objective_override)
+        try:
+            a_vals = _a_value(n_val=n_val, m_val=m_val)
+        except Exception:
+            a_vals = np.full_like(g1_vals, np.nan, dtype=float)
+        a_residual_vals = a_vals - 1.0
+        weighted_rmse_a = float(np.sqrt(np.sum(weights * a_residual_vals ** 2)))
+        phi_vals_local = plot_df['phi_elliptic'].to_numpy(dtype=float)
+        r_quad_vals_local = plot_df['r_quadratic'].to_numpy(dtype=float)
+        r_model_vals = np.array([_r_opt_from_phi(ph, n_val=n_val, m_val=m_val) for ph in phi_vals_local], dtype=float)
+        weighted_rmse_r = float(np.sqrt(np.sum(weights * (r_quad_vals_local - r_model_vals) ** 2)))
+        return {
+            'name': case_name,
+            'n': n_val,
+            'm': m_val,
+            'objective': float(objective_value),
+            'method': method,
+            'rmse_a': float(weighted_rmse_a),
+            'rmse_r': float(weighted_rmse_r),
+        }
+
+    # Elliptic mode mixity angle:
+    # phi^G = arctan((GIII * GIc) / (GI * GIIIc))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio_phi = (plot_df['G3c'] * gic_ref) / (plot_df['G1c'] * giiic_ref)
+        plot_df['phi_elliptic'] = np.arctan(ratio_phi)
+        plot_df['phi_elliptic'] = np.where(plot_df['G1c'] == 0, np.pi / 2, plot_df['phi_elliptic'])
+
+    # Keep radial coordinate for diagnostics/plotting.
+    plot_df['r_elliptic'] = _r_value()
+    # Plot y-values in quadratic radial space:
+    # r^G = sqrt((GI/GIc)^2 + (GIII/GIIIc)^2)
+    plot_df['r_quadratic'] = np.sqrt((plot_df['G1c'] / gic_ref) ** 2 + (plot_df['G3c'] / giiic_ref) ** 2)
+
+    # Fit n and m independently with GIc/GIIIc fixed from Gc_lim means.
+    n_opt = 2.0
+    m_opt = 2.0
+    nm_opt_method = 'initial'
+    nm_opt_objective = np.nan
+    try:
+        from scipy.optimize import minimize
+        res_nm = minimize(
+            lambda x: _objective_nm(float(x[0]), float(x[1])),
+            x0=np.array([2.0, 2.0], dtype=float),
+            method='L-BFGS-B',
+            bounds=[(1.0, 10.0), (1.0, 10.0)],
+        )
+        if res_nm.success:
+            n_opt = float(res_nm.x[0])
+            m_opt = float(res_nm.x[1])
+            nm_opt_objective = float(res_nm.fun)
+            nm_opt_method = 'scipy:L-BFGS-B'
+        else:
+            nm_opt_method = 'scipy_failed_fallback_grid'
+    except Exception:
+        nm_opt_method = 'scipy_unavailable_fallback_grid'
+
+    if not np.isfinite(nm_opt_objective):
+        n_grid = np.linspace(1.0, 10.0, 121)
+        m_grid = np.linspace(1.0, 10.0, 121)
+        best_obj = np.inf
+        best_n = n_opt
+        best_m = m_opt
+        for n_try in n_grid:
+            for m_try in m_grid:
+                obj = _objective_nm(float(n_try), float(m_try))
+                if obj < best_obj:
+                    best_obj = obj
+                    best_n = float(n_try)
+                    best_m = float(m_try)
+        n_opt = best_n
+        m_opt = best_m
+        nm_opt_objective = float(best_obj)
+        nm_opt_method = 'grid_search'
+
+    # Structured feedback with uncertainty estimates from the Gc_lim subsets.
+    gi_seed = plot_df.loc[ratio_i_mask, 'G1c'] if ratio_i_mask.any() else plot_df['G1c']
+    giii_seed = plot_df.loc[ratio_iii_mask, 'G3c'] if ratio_iii_mask.any() else plot_df['G3c']
+    gic_std = float(pd.to_numeric(gi_seed, errors='coerce').std(ddof=1) / np.sqrt(max(len(gi_seed), 1)))
+    giiic_std = float(pd.to_numeric(giii_seed, errors='coerce').std(ddof=1) / np.sqrt(max(len(giii_seed), 1)))
+    if not np.isfinite(gic_std):
+        gic_std = 0.0
+    if not np.isfinite(giiic_std):
+        giiic_std = 0.0
+    r_vals = plot_df['r_elliptic'].to_numpy(dtype=float)
+    fit_nm2 = _calc_case_stats(2.0, 2.0, 'Model A (fixed n=m=2)')
+    fit_nm1 = _calc_case_stats(1.0, 1.0, 'Model B (fixed n=m=1)')
+    fit_nmfree = _calc_case_stats(
+        n_opt, m_opt,
+        f"Model C (fitted n,m: n={n_opt:.4f}, m={m_opt:.4f})",
+        method=nm_opt_method,
+        objective_override=nm_opt_objective,
+    )
+
+    def _print_fit_block(fit_result, model_label):
+        print(f"  {model_label}")
+        print(f"    exponents        : n={fit_result['n']:.4f}, m={fit_result['m']:.4f}")
+        print(f"    GIc              : {gic_ref:.4f} +/- {gic_unc_weighted:.4f} J/m^2 (weighted)")
+        print(f"    GIIIc            : {giiic_ref:.4f} +/- {giiic_unc_weighted:.4f} J/m^2 (weighted)")
+        print(f"    optimizer        : {fit_result['method']}")
+        print(f"    objective        : {fit_result['objective']:.6g}")
+        print(f"    weighted_RMSE_a  : {fit_result['rmse_a']:.6g}")
+        print(f"    weighted_RMSE_r  : {fit_result['rmse_r']:.6g}")
+        print(f"    r (mean/med/std) : {np.mean(r_vals):.4f} / {np.median(r_vals):.4f} / {np.std(r_vals):.4f}")
+
+    print("")
+    print("=" * 72)
+    print("plot_GIII_ratio_vs_G - calibration report")
+    print("-" * 72)
+    print(f"  Data points used   : N={len(plot_df)}")
+    print(f"  Gc threshold       : Gc_lim={Gc_lim:.3f}")
+    print(f"  subset counts      : N_GIc={int(np.sum(ratio_i_mask))}, N_GIIIc={int(np.sum(ratio_iii_mask))}")
+    print(f"  Uncertainty basis  : inverse-variance weighted mean (1/sigma^2)")
+    print(f"  subset SE (legacy) : GIc={gic_std:.4f}, GIIIc={giiic_std:.4f} J/m^2")
+    print("-" * 72)
+    _print_fit_block(fit_nm2, "Model A (fixed n=m=2)")
+    print("")
+    _print_fit_block(fit_nm1, "Model B (fixed n=m=1)")
+    print("")
+    _print_fit_block(fit_nmfree, fit_nmfree['name'])
+    print("=" * 72)
+    print("")
+
+    # Propagate uncertainties (independent G1c/G3c assumption):
+    # x = atan((G3*GIc)/(G1*GIIIc))
+    # y = ((G1/GIc)^n + (G3/GIIIc)^m)
+    s = plot_df['G13_total']
+    g1 = plot_df['G1c']
+    g3 = plot_df['G3c']
+    sg1 = plot_df['G1c_unc']
+    sg3 = plot_df['G3c_unc']
+    g1_safe = np.where(np.abs(g1.to_numpy(dtype=float)) > 1e-12, g1.to_numpy(dtype=float), 1e-12)
+    ratio_safe = (g3.to_numpy(dtype=float) * gic_ref) / (g1_safe * giiic_ref)
+    denom = 1.0 + ratio_safe ** 2
+    dx_dg1 = -(g3.to_numpy(dtype=float) * gic_ref) / ((g1_safe ** 2) * giiic_ref * denom)
+    dx_dg3 = gic_ref / (g1_safe * giiic_ref * denom)
+    plot_df['x_unc'] = np.sqrt((dx_dg1 * sg1) ** 2 + (dx_dg3 * sg3) ** 2)
+
+    # y-uncertainty propagation for quadratic radial coordinate:
+    # r = sqrt((GI/GIc)^2 + (GIII/GIIIc)^2)
+    g1_np = g1.to_numpy(dtype=float)
+    g3_np = g3.to_numpy(dtype=float)
+    sg1_np = sg1.to_numpy(dtype=float)
+    sg3_np = sg3.to_numpy(dtype=float)
+    u_np = np.clip(g1_np / gic_ref, 0.0, None)
+    v_np = np.clip(g3_np / giiic_ref, 0.0, None)
+    r_np = np.sqrt(u_np ** 2 + v_np ** 2)
+    r_safe = np.where(r_np > 1e-12, r_np, 1e-12)
+    # dr/du = u/r, dr/dv = v/r
+    dr_du = u_np / r_safe
+    dr_dv = v_np / r_safe
+    dr_dg1 = dr_du * (1.0 / gic_ref)
+    dr_dg3 = dr_dv * (1.0 / giiic_ref)
+    y_unc = np.sqrt((dr_dg1 * sg1_np) ** 2 + (dr_dg3 * sg3_np) ** 2)
+    plot_df['y_unc'] = y_unc
+    plot_df['x_unc'] = pd.to_numeric(plot_df['x_unc'], errors='coerce').fillna(0.0).clip(lower=0.0)
+    plot_df['y_unc'] = pd.to_numeric(plot_df['y_unc'], errors='coerce').fillna(0.0).clip(lower=0.0)
 
     setup_visualization_style()
     plt.rcParams['font.family'] = SELECTED_FONT
@@ -1211,78 +1736,125 @@ def plot_giii_ratio_vs_g(
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
     
-    def _plot_mode_with_fit(x_series, y_series, color, label):
-        x = pd.to_numeric(x_series, errors='coerce').to_numpy(dtype=float)
-        y = pd.to_numeric(y_series, errors='coerce').to_numpy(dtype=float)
-        valid = np.isfinite(x) & np.isfinite(y)
-        x = x[valid]
-        y = y[valid]
-        if len(x) == 0:
-            return
+    def _get_alpha_equiv_color_from_base(base_color, alpha_val):
+        color_name = None
+        for name, value in lo.COLORS.items():
+            if str(value).lower() == str(base_color).lower():
+                color_name = name
+                break
+        if (
+            color_name is not None
+            and hasattr(lo, 'COLORS_ALPHA_EQUIV')
+            and color_name in lo.COLORS_ALPHA_EQUIV
+            and alpha_val in lo.COLORS_ALPHA_EQUIV[color_name]
+        ):
+            return lo.COLORS_ALPHA_EQUIV[color_name][alpha_val]
+        return _alpha_equivalent_color(base_color, alpha_val)
 
-        ax.scatter(
-            x,
-            y,
-            c=color,
-            s=45,
-            alpha=0.85,
-            edgecolors='none',
-            label=label,
-            zorder=3,
-        )
+    base_color = lo.COLORS['blue']
+    marker_color = base_color  # real alpha used below
+    errorbar_color = _get_alpha_equiv_color_from_base(base_color, 0.5)
+    x_vals = plot_df['phi_elliptic'].to_numpy(dtype=float)
+    y_vals = plot_df['r_quadratic'].to_numpy(dtype=float)
+    x_err_vals = plot_df['x_unc'].to_numpy(dtype=float)
+    y_err_vals = plot_df['y_unc'].to_numpy(dtype=float)
 
-        # Linear least-squares fit: y = m*x + b
-        if len(x) < 2:
-            return
-        m, b = np.polyfit(x, y, 1)
-        x_fit = np.linspace(float(np.min(x)), float(np.max(x)), 200)
-        y_fit = m * x_fit + b
-        ax.plot(x_fit, y_fit, color=color, linewidth=1.8, zorder=4)
+    # Bars first (background), same behavior as plot_mode_I_III_interaction.
+    for i in range(len(x_vals)):
+        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
+                [y_vals[i], y_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i], x_vals[i]],
+                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
 
-        # Approximate 95% prediction band for individual observations.
-        n = len(x)
-        dof = n - 2
-        if dof <= 0:
-            return
-        y_hat = m * x + b
-        residuals = y - y_hat
-        s_err = np.sqrt(np.sum(residuals ** 2) / dof)
-        x_mean = np.mean(x)
-        sxx = np.sum((x - x_mean) ** 2)
-        if sxx <= 0:
-            return
+    ax.scatter(
+        x_vals,
+        y_vals,
+        c=marker_color,
+        s=marker_size ** 2 * 10,
+        alpha=alpha,
+        edgecolors='none',
+        label=r'$r^{\mathcal{G}}$ data',
+        zorder=1,
+    )
 
-        # z=1.96 approximation (good for moderate n); avoids extra scipy dependency.
-        t_crit = 1.96
-        pred_scale = np.sqrt(1.0 + (1.0 / n) + ((x_fit - x_mean) ** 2) / sxx)
-        band = t_crit * s_err * pred_scale
-        ax.fill_between(
-            x_fit,
-            y_fit - band,
-            y_fit + band,
-            color=color,
-            alpha=0.2,
-            linewidth=0,
-            zorder=2,
-        )
+    phi_fit = np.linspace(0.0, np.pi / 2, 250)
+    r_fit_nm2 = np.array([_r_opt_from_phi(ph, n_val=2.0, m_val=2.0) for ph in phi_fit], dtype=float)
+    r_fit_nm1 = np.array([_r_opt_from_phi(ph, n_val=1.0, m_val=1.0) for ph in phi_fit], dtype=float)
+    r_fit_nmfree = np.array([_r_opt_from_phi(ph, n_val=n_opt, m_val=m_opt) for ph in phi_fit], dtype=float)
+    ax.plot(
+        phi_fit,
+        r_fit_nm2,
+        color=base_color,
+        linewidth=1.5,
+        alpha=0.9,
+        zorder=2,
+        label='optimized law (n=m=2)' if show_legend else None,
+    )
+    ax.plot(
+        phi_fit,
+        r_fit_nm1,
+        color=lo.COLORS['orange'],
+        linewidth=1.5,
+        alpha=0.9,
+        zorder=2,
+        label='optimized law (n=m=1)' if show_legend else None,
+    )
+    ax.plot(
+        phi_fit,
+        r_fit_nmfree,
+        color=lo.COLORS['red'],
+        linewidth=1.5,
+        alpha=0.9,
+        zorder=2,
+        label=f'optimized law (n={n_opt:.2f}, m={m_opt:.2f})' if show_legend else None,
+    )
 
-    _plot_mode_with_fit(plot_df['G13_total'], plot_df['GIII_over_G13'], lo.COLORS['blue'], 'Mode III ratio')
-
-    ax.set_xlabel('G_I + G_III (J/m^2)')
-    ax.set_ylabel(r'Mode III ratio $\phi_{\mathrm{III}} = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$')
-    ax.set_title(title)
-    ax.set_ylim(0.0, 1.0)
-    ax.set_xlim(0.0, float(plot_df['G13_total'].max()) * 1.05 if not plot_df.empty else 1.0)
+    ax.set_xlabel(
+        r'Elliptic mode mixity angle $\varphi^{\,\mathcal{G}}$ (rad) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x,
+        color='black',
+    )
+    ax.set_ylabel(
+        r'Elliptic radial coordinate $r^{\,\mathcal{G}}$ $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y,
+        color='black',
+    )
+    if title is not None:
+        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
+    if x_lim is not None:
+        ax.set_xlim(x_lim)
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
     ax.tick_params(
         axis='both', which='major',
         labelsize=VISUALIZATION_STYLES['font_size'],
-        pad=10, width=1, length=10,
-        bottom=True, top=True, left=True, right=True,
-        labelcolor='black', color='grey',
+        pad=10,
+        width=tick_width,
+        length=tick_length,
+        color=TICK_COLOR,
+        bottom=True, top=True, labeltop=False,
+        left=True, right=True, labelright=False,
+        labelcolor='black',
     )
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(frame_thickness)
     ax.grid(False)
     if show_legend:
         ax.legend()
@@ -1294,10 +1866,10 @@ def plot_giii_ratio_vs_g(
 def plot_surface_load_mode_III_ratio(
     df_or_path,
     title=None,
-    figsize=(14, 7.5),
-    dpi=120,
-    alpha=0.85,
-    marker_size=45,
+    figsize=(8, 7.5),
+    dpi=100,
+    alpha=0.8,
+    marker_size=2.3,
     tick_width=1,
     tick_length=10,
     labelpad_x=15,
@@ -1382,7 +1954,7 @@ def plot_surface_load_mode_III_ratio(
         plot_df['p_wx_plot'],
         plot_df['psi_III'],
         c=lo.COLORS['blue'],
-        s=marker_size,
+        s=marker_size ** 2 * 10,
         alpha=alpha,
         edgecolors='none',
         zorder=3,

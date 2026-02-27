@@ -357,7 +357,7 @@ def import_split_and_save_field_data_excel(filepath, data_start_row=5, save_as=N
                     
                     # Merge new data (rows + columns) into existing data
                     merged_info = existing_info.copy()
-
+                    
                     new_columns = [col for col in df_raw.columns if col not in existing_data.columns]
 
                     if 'AFN' in existing_data.columns and 'AFN' in df_raw.columns:
@@ -454,10 +454,10 @@ def import_split_and_save_field_data_excel(filepath, data_start_row=5, save_as=N
 
                     column_names_str = [str(col).strip() for col in merged_data.columns]
                     merged_info = merged_info[merged_info['Abreviation'].isin(column_names_str)].reset_index(drop=True)
-
+                    
                     if new_columns:
                         print(f"Added new columns: {new_columns}")
-
+                    
                     df_raw = merged_data
                     df_raw_info = merged_info
                 else:
@@ -1206,12 +1206,12 @@ def calculate_err_weac(
     h_wl=4.5,
     E_wl=1.0,
     nu_wl=0.15,
-    h_wl_err=2.0,
-    h_s_err=5.0,
+    h_wl_err=1.0,
+    h_s_err=2.5,
     l_dw_err=5.0,
-    L_err=10.0,
-    rho_err=2.0,
-    E_wl_err=0.5,
+    L_err=5.0,
+    rho_err=1.0,
+    E_wl_err=0.25,
     nu_wl_err=0.05,
     pc_rel_err=0.01,
 ):
@@ -1242,17 +1242,17 @@ def calculate_err_weac(
         Weak-layer Young's modulus in MPa.
     nu_wl : float, default 0.15
         Weak-layer Poisson ratio (-).
-    h_wl_err : float, default 2.0
+    h_wl_err : float, default 1.0
         Absolute uncertainty of weak-layer thickness (mm).
-    h_s_err : float, default 5.0
+    h_s_err : float, default 2.5
         Absolute uncertainty of slab height h_s (mm).
-    l_dw_err : float, default 5.0
+    l_dw_err : float, default 2.5
         Absolute uncertainty of l_dw (mm).
-    L_err : float, default 10.0
+    L_err : float, default 2.5
         Absolute uncertainty of total slab length L (mm).
-    rho_err : float, default 2.0
+    rho_err : float, default 1.0
         Absolute uncertainty of slab densities rho_1 to rho_4 (kg/m^3).
-    E_wl_err : float, default 0.5
+    E_wl_err : float, default 0.25
         Absolute uncertainty of weak-layer Young's modulus (MPa).
     nu_wl_err : float, default 0.05
         Absolute uncertainty of weak-layer Poisson ratio (-).
@@ -1753,7 +1753,7 @@ def calculate_err_weac(
 
     return df_updated, df_info_updated
 
-    
+
 def add_columns_to_data(raw_data_path, raw_info_data_path, new_columns_info, appendix="", save=True):
     """
     Add new columns to data and metadata DataFrames and save as Parquet files.
@@ -2387,3 +2387,169 @@ def display_gen_stats(parquet_path_masters, parquet_path_info):
         print(f"    {date_col:<8}  — column not found")
 
     print(f"\n{sep}\n")
+
+def explore_parquet_data(afn, column_name, raw_data_path, raw_info_data_path):
+    """
+    Display metadata and value for a specific AFN and column from parquet files.
+    
+    Parameters:
+    -----------
+    raw_data_path : str
+        Filepath to master Parquet data file (e.g., 'ON4PB_raw.parquet')
+    raw_info_data_path : str
+        Filepath to master Parquet metadata file (e.g., 'ON4PB_raw_info.parquet')
+    afn : int
+        AFN (Automated File Number) to display
+    column_name : str
+        Column name to display
+        
+    Returns:
+    --------
+    None
+        Prints formatted output with metadata and value
+        
+    Example:
+    --------
+    >>> explore_parquet_data('ON4PB_raw.parquet', 'ON4PB_raw_info.parquet', 1001, 'sample_geometry_FEM')
+    """
+    # Load parquet files
+    try:
+        df_data = pd.read_parquet(raw_data_path, engine='fastparquet')
+    except Exception as e:
+        print(f"Error loading data file {raw_data_path}: {e}")
+        return None
+    
+    try:
+        df_info = pd.read_parquet(raw_info_data_path, engine='fastparquet')
+    except Exception as e:
+        print(f"Error loading metadata file {raw_info_data_path}: {e}")
+        return None
+    
+    # Get available columns
+    available_columns = sorted(df_data.columns.tolist())
+    
+    # Get data row for selected AFN
+    afn_row = df_data[df_data['AFN'] == afn]
+    if afn_row.empty:
+        print(f"Error: AFN {afn} not found in data")
+        return None
+    
+    afn_data = afn_row.iloc[0]
+    
+    # Check if column exists
+    if column_name not in df_data.columns:
+        print(f"Error: Column '{column_name}' not found in data")
+        print()
+        print("Available columns:")
+        print("-" * 80)
+        for col in available_columns:
+            print(f"  {col}")
+        return None
+    
+    # Get value
+    value = afn_data[column_name]
+    
+    # Get metadata from info parquet
+    info_row = df_info[df_info['Abreviation'] == column_name]
+    
+    # Format value for display
+    def format_value(val):
+        """Format a value for display, handling various data types."""
+        # Check for None first (before pd.isna which can fail on arrays)
+        if val is None:
+            return "None"
+        
+        # Handle lists and arrays first (before pd.isna which can fail on arrays)
+        if isinstance(val, (list, tuple, np.ndarray)):
+            if len(val) == 0:
+                return "[] (empty)"
+            
+            # Check for NaN in arrays
+            if isinstance(val, np.ndarray):
+                if np.any(pd.isna(val)):
+                    # Has some NaN values
+                    val = val.tolist()
+                else:
+                    val = val.tolist()
+            elif isinstance(val, tuple):
+                val = list(val)
+            
+            # Format the full list
+            formatted = str(val)
+            return f"{formatted}\n  (Type: {type(val).__name__}, Length: {len(val)})"
+        
+        # For scalar values, check for NaN
+        try:
+            if pd.isna(val):
+                return "NaN (missing data)"
+        except (TypeError, ValueError):
+            # pd.isna might fail for some types, continue
+            pass
+        
+        # Handle strings
+        if isinstance(val, str):
+            if len(val) == 0:
+                return '"" (empty string)'
+            return f'"{val}"\n  (Type: str, Length: {len(val)})'
+        
+        # Handle numeric types
+        if isinstance(val, (int, float, np.integer, np.floating)):
+            return f"{val}\n  (Type: {type(val).__name__})"
+        
+        # Handle boolean
+        if isinstance(val, bool):
+            return f"{val}\n  (Type: bool)"
+        
+        # Default: convert to string
+        return f"{val}\n  (Type: {type(val).__name__})"
+    
+    # Print formatted output
+    print("=" * 80)
+    print(f"AFN: {afn} | Column: {column_name}")
+    print("=" * 80)
+    print()
+    
+    # Display metadata if available
+    if not info_row.empty:
+        info_data = info_row.iloc[0]
+        print("METADATA:")
+        print("-" * 80)
+        
+        long_name = info_data.get('Long Name', 'N/A')
+        units = info_data.get('Units', 'N/A')
+        data_type = info_data.get('Data_Type', 'N/A')
+        description = info_data.get('Description', 'N/A')
+        
+        print(f"  Long Name: {long_name}")
+        print(f"  Units: {units}")
+        print(f"  Data Type: {data_type}")
+        print(f"  Description:")
+        # Indent description lines
+        for line in str(description).split('\n'):
+            print(f"    {line}")
+        print()
+    else:
+        print("METADATA:")
+        print("-" * 80)
+        print("  No metadata found for this column")
+        print()
+    
+    # Display value
+    print("VALUE:")
+    print("-" * 80)
+    formatted_value = format_value(value)
+    for line in formatted_value.split('\n'):
+        print(f"  {line}")
+    print()
+    print("=" * 80)
+    print()
+    
+    # Always print available columns at the end
+    print("AVAILABLE COLUMNS:")
+    print("-" * 80)
+    for col in available_columns:
+        print(f"  {col}")
+    print()
+    print("=" * 80)
+    
+    return None
