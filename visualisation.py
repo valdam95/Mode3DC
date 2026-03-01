@@ -1412,6 +1412,8 @@ def plot_GIII_ratio_vs_G(
     labelpad_y=15,
     frame_thickness=FRAME_THICKNESS,
     Gc_lim=0.8,
+    free_fit_variant='C',
+    n_starts=49,
     y_lim=None,
 ):
     """
@@ -1443,6 +1445,12 @@ def plot_GIII_ratio_vs_G(
         Threshold to compute fixed critical values from data means:
         - GIIIc = mean(G3c) for rows with G3c/(G1c+G3c) >= Gc_lim
         - GIc   = mean(G1c) for rows with G1c/(G1c+G3c) >= Gc_lim
+    free_fit_variant : {'B', 'C'}, default 'B'
+        Residual variant for the free (red) n,m fit:
+        - 'B': (GI/GIc)^n + (GIII/GIIIc)^m - 1
+        - 'C': (GI/GIc)^(1/n) + (GIII/GIIIc)^(1/m) - 1
+    n_starts : int, default 49
+        Number of initial guesses for multi-start local optimization of n,m.
     y_lim : tuple, optional
         y-axis limits as (ymin, ymax). If None, automatic limits are used.
     """
@@ -1524,13 +1532,20 @@ def plot_GIII_ratio_vs_G(
     sg1_vals = plot_df['G1c_unc'].to_numpy(dtype=float)
     sg3_vals = plot_df['G3c_unc'].to_numpy(dtype=float)
     sigma_weight = np.sqrt(sg1_vals ** 2 + sg3_vals ** 2)
-    weights = 1.0 / np.maximum(sigma_weight, 1e-6) ** 2
+    sigma_eff = np.maximum(sigma_weight, 1e-6)
+    weights_raw = 1.0 / (sigma_eff ** 2)
+    weights = weights_raw.copy()
     weights = weights / np.maximum(np.sum(weights), 1e-12)
 
     def _a_value(n_val, m_val):
         u = np.clip(g1_vals / max(gic_ref, 1e-12), 0.0, None)
         v = np.clip(g3_vals / max(giiic_ref, 1e-12), 0.0, None)
         return np.power(u, n_val) + np.power(v, m_val)
+
+    def _c_value(n_val, m_val):
+        u = np.clip(g1_vals / max(gic_ref, 1e-12), 1e-12, None)
+        v = np.clip(g3_vals / max(giiic_ref, 1e-12), 1e-12, None)
+        return np.power(u, 1.0 / max(n_val, 1e-12)) + np.power(v, 1.0 / max(m_val, 1e-12))
 
     def _r_value():
         # Elliptic radial coordinate used for plotting:
@@ -1539,18 +1554,13 @@ def plot_GIII_ratio_vs_G(
         v = np.clip(g3_vals / max(giiic_ref, 1e-12), 0.0, None)
         return np.sqrt(u ** 2 + v ** 2)
 
-    def _objective_nm(n_val, m_val):
-        if n_val < 1.0 or n_val > 10.0 or m_val < 1.0 or m_val > 10.0:
-            return np.inf
-        a_tmp = _a_value(n_val=n_val, m_val=m_val)
-        residual = a_tmp - 1.0
-        return float(np.sum(weights * residual ** 2))
-
-    def _r_opt_from_phi(phi_val, n_val, m_val):
+    def _r_opt_from_phi(phi_val, n_val, m_val, variant='B'):
         c = max(np.cos(phi_val), 1e-12)
         s = max(np.sin(phi_val), 1e-12)
 
         def f(rv):
+            if variant == 'C':
+                return (rv * c) ** (1.0 / max(n_val, 1e-12)) + (rv * s) ** (1.0 / max(m_val, 1e-12)) - 1.0
             return (rv * c) ** n_val + (rv * s) ** m_val - 1.0
 
         lo_r, hi_r = 0.0, 1.0
@@ -1564,21 +1574,87 @@ def plot_GIII_ratio_vs_G(
                 hi_r = mid
         return 0.5 * (lo_r + hi_r)
 
-    def _calc_case_stats(n_val, m_val, case_name, method='fixed_exponent', objective_override=None):
+    # Base coordinates and propagated uncertainties in (phi, r) space.
+    g1_safe = np.where(np.abs(g1_vals) > 1e-12, g1_vals, 1e-12)
+    ratio_safe = (g3_vals * gic_ref) / (g1_safe * giiic_ref)
+    phi_vals_base = np.arctan(ratio_safe)
+    phi_vals_base = np.where(g1_vals == 0, np.pi / 2, phi_vals_base)
+    r_quad_vals_base = np.sqrt((g1_vals / gic_ref) ** 2 + (g3_vals / giiic_ref) ** 2)
+
+    denom = 1.0 + ratio_safe ** 2
+    dx_dg1 = -(g3_vals * gic_ref) / ((g1_safe ** 2) * giiic_ref * denom)
+    dx_dg3 = gic_ref / (g1_safe * giiic_ref * denom)
+    x_unc_base = np.sqrt((dx_dg1 * sg1_vals) ** 2 + (dx_dg3 * sg3_vals) ** 2)
+
+    r_safe = np.where(r_quad_vals_base > 1e-12, r_quad_vals_base, 1e-12)
+    u_np = np.clip(g1_vals / gic_ref, 0.0, None)
+    v_np = np.clip(g3_vals / giiic_ref, 0.0, None)
+    dr_du = u_np / r_safe
+    dr_dv = v_np / r_safe
+    dr_dg1 = dr_du * (1.0 / gic_ref)
+    dr_dg3 = dr_dv * (1.0 / giiic_ref)
+    y_unc_base = np.sqrt((dr_dg1 * sg1_vals) ** 2 + (dr_dg3 * sg3_vals) ** 2)
+
+    x_unc_base = np.clip(np.nan_to_num(x_unc_base, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+    y_unc_base = np.clip(np.nan_to_num(y_unc_base, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+
+    def _objective_nm(n_val, m_val):
+        if n_val < 1e-3 or n_val > 10.0 or m_val < 1e-3 or m_val > 10.0:
+            return np.inf
+        r_model = np.array(
+            [_r_opt_from_phi(ph, n_val=n_val, m_val=m_val, variant=free_fit_variant) for ph in phi_vals_base],
+            dtype=float
+        )
+        eps = 1e-4
+        phi_p = np.clip(phi_vals_base + eps, 0.0, np.pi / 2)
+        phi_m = np.clip(phi_vals_base - eps, 0.0, np.pi / 2)
+        r_model_p = np.array(
+            [_r_opt_from_phi(ph, n_val=n_val, m_val=m_val, variant=free_fit_variant) for ph in phi_p],
+            dtype=float
+        )
+        r_model_m = np.array(
+            [_r_opt_from_phi(ph, n_val=n_val, m_val=m_val, variant=free_fit_variant) for ph in phi_m],
+            dtype=float
+        )
+        dphi = np.maximum(phi_p - phi_m, 1e-9)
+        dr_dphi = (r_model_p - r_model_m) / dphi
+        sigma_eff2 = y_unc_base ** 2 + (dr_dphi * x_unc_base) ** 2
+        sigma_eff2 = np.maximum(sigma_eff2, 1e-10)
+        residual = r_quad_vals_base - r_model
+        return float(np.sum((residual ** 2) / sigma_eff2))
+
+    def _calc_case_stats(
+        n_val,
+        m_val,
+        case_name,
+        method='fixed_exponent',
+        objective_override=None,
+        variant='B',
+        n_params=0,
+    ):
         n_val = float(n_val)
         m_val = float(m_val)
         objective_value = _objective_nm(n_val, m_val)
         if objective_override is not None and np.isfinite(objective_override):
             objective_value = float(objective_override)
         try:
-            a_vals = _a_value(n_val=n_val, m_val=m_val)
+            if variant == 'C':
+                expr_vals = _c_value(n_val=n_val, m_val=m_val)
+            else:
+                expr_vals = _a_value(n_val=n_val, m_val=m_val)
         except Exception:
-            a_vals = np.full_like(g1_vals, np.nan, dtype=float)
-        a_residual_vals = a_vals - 1.0
+            expr_vals = np.full_like(g1_vals, np.nan, dtype=float)
+        a_residual_vals = expr_vals - 1.0
         weighted_rmse_a = float(np.sqrt(np.sum(weights * a_residual_vals ** 2)))
+        chi2 = float(np.sum(weights_raw * a_residual_vals ** 2))
+        dof = max(len(a_residual_vals) - int(n_params), 1)
+        reduced_chi2 = float(chi2 / dof)
         phi_vals_local = plot_df['phi_elliptic'].to_numpy(dtype=float)
         r_quad_vals_local = plot_df['r_quadratic'].to_numpy(dtype=float)
-        r_model_vals = np.array([_r_opt_from_phi(ph, n_val=n_val, m_val=m_val) for ph in phi_vals_local], dtype=float)
+        r_model_vals = np.array(
+            [_r_opt_from_phi(ph, n_val=n_val, m_val=m_val, variant=variant) for ph in phi_vals_local],
+            dtype=float
+        )
         weighted_rmse_r = float(np.sqrt(np.sum(weights * (r_quad_vals_local - r_model_vals) ** 2)))
         return {
             'name': case_name,
@@ -1588,6 +1664,8 @@ def plot_GIII_ratio_vs_G(
             'method': method,
             'rmse_a': float(weighted_rmse_a),
             'rmse_r': float(weighted_rmse_r),
+            'chi2': chi2,
+            'reduced_chi2': reduced_chi2,
         }
 
     # Elliptic mode mixity angle:
@@ -1608,27 +1686,59 @@ def plot_GIII_ratio_vs_G(
     m_opt = 2.0
     nm_opt_method = 'initial'
     nm_opt_objective = np.nan
+    nm_starts_total = 0
+    nm_starts_success = 0
+    nm_boundary_hits = 0
+    nm_top = []
+    fit_variant = str(free_fit_variant).upper().strip()
+    if fit_variant not in {'B', 'C'}:
+        fit_variant = 'B'
+    free_fit_variant = fit_variant
     try:
         from scipy.optimize import minimize
-        res_nm = minimize(
-            lambda x: _objective_nm(float(x[0]), float(x[1])),
-            x0=np.array([2.0, 2.0], dtype=float),
-            method='L-BFGS-B',
-            bounds=[(1.0, 10.0), (1.0, 10.0)],
-        )
-        if res_nm.success:
-            n_opt = float(res_nm.x[0])
-            m_opt = float(res_nm.x[1])
-            nm_opt_objective = float(res_nm.fun)
-            nm_opt_method = 'scipy:L-BFGS-B'
+        seed_axis = np.array([1e-3, 1e-2, 0.1, 0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0], dtype=float)
+        seed_pairs = [(float(a), float(b)) for a in seed_axis for b in seed_axis]
+        if int(n_starts) > len(seed_pairs):
+            rng = np.random.default_rng(42)
+            extra = int(n_starts) - len(seed_pairs)
+            random_pairs = list(zip(rng.uniform(1e-3, 10.0, extra), rng.uniform(1e-3, 10.0, extra)))
+            seed_pairs.extend([(float(a), float(b)) for a, b in random_pairs])
+        elif int(n_starts) < len(seed_pairs):
+            seed_pairs = seed_pairs[:max(int(n_starts), 1)]
+
+        runs = []
+        for n0, m0 in seed_pairs:
+            nm_starts_total += 1
+            res_nm = minimize(
+                lambda x: _objective_nm(float(x[0]), float(x[1])),
+                x0=np.array([n0, m0], dtype=float),
+                method='L-BFGS-B',
+                bounds=[(1e-3, 10.0), (1e-3, 10.0)],
+            )
+            if res_nm.success and np.all(np.isfinite(res_nm.x)) and np.isfinite(res_nm.fun):
+                nm_starts_success += 1
+                n_hat = float(res_nm.x[0])
+                m_hat = float(res_nm.x[1])
+                if (
+                    abs(n_hat - 1e-3) < 1e-4 or abs(n_hat - 10.0) < 1e-4
+                    or abs(m_hat - 1e-3) < 1e-4 or abs(m_hat - 10.0) < 1e-4
+                ):
+                    nm_boundary_hits += 1
+                runs.append((float(res_nm.fun), n_hat, m_hat))
+
+        if runs:
+            runs.sort(key=lambda t: t[0])
+            nm_top = runs[:5]
+            nm_opt_objective, n_opt, m_opt = runs[0]
+            nm_opt_method = 'multistart:scipy:L-BFGS-B'
         else:
             nm_opt_method = 'scipy_failed_fallback_grid'
     except Exception:
         nm_opt_method = 'scipy_unavailable_fallback_grid'
 
     if not np.isfinite(nm_opt_objective):
-        n_grid = np.linspace(1.0, 10.0, 121)
-        m_grid = np.linspace(1.0, 10.0, 121)
+        n_grid = np.linspace(1e-3, 10.0, 121)
+        m_grid = np.linspace(1e-3, 10.0, 121)
         best_obj = np.inf
         best_n = n_opt
         best_m = m_opt
@@ -1643,6 +1753,8 @@ def plot_GIII_ratio_vs_G(
         m_opt = best_m
         nm_opt_objective = float(best_obj)
         nm_opt_method = 'grid_search'
+        nm_starts_total = max(nm_starts_total, len(n_grid) * len(m_grid))
+        nm_starts_success = max(nm_starts_success, 1)
 
     # Structured feedback with uncertainty estimates from the Gc_lim subsets.
     gi_seed = plot_df.loc[ratio_i_mask, 'G1c'] if ratio_i_mask.any() else plot_df['G1c']
@@ -1654,13 +1766,15 @@ def plot_GIII_ratio_vs_G(
     if not np.isfinite(giiic_std):
         giiic_std = 0.0
     r_vals = plot_df['r_elliptic'].to_numpy(dtype=float)
-    fit_nm2 = _calc_case_stats(2.0, 2.0, 'Model A (fixed n=m=2)')
-    fit_nm1 = _calc_case_stats(1.0, 1.0, 'Model B (fixed n=m=1)')
+    fit_nm2 = _calc_case_stats(2.0, 2.0, 'Model A (fixed n=m=2)', variant='B', n_params=0)
+    fit_nm1 = _calc_case_stats(1.0, 1.0, 'Model B (fixed n=m=1)', variant='B', n_params=0)
     fit_nmfree = _calc_case_stats(
         n_opt, m_opt,
         f"Model C (fitted n,m: n={n_opt:.4f}, m={m_opt:.4f})",
         method=nm_opt_method,
         objective_override=nm_opt_objective,
+        variant=free_fit_variant,
+        n_params=2,
     )
 
     def _print_fit_block(fit_result, model_label):
@@ -1672,6 +1786,8 @@ def plot_GIII_ratio_vs_G(
         print(f"    objective        : {fit_result['objective']:.6g}")
         print(f"    weighted_RMSE_a  : {fit_result['rmse_a']:.6g}")
         print(f"    weighted_RMSE_r  : {fit_result['rmse_r']:.6g}")
+        print(f"    chi^2            : {fit_result['chi2']:.6g}")
+        print(f"    reduced chi^2    : {fit_result['reduced_chi2']:.6g}")
         print(f"    r (mean/med/std) : {np.mean(r_vals):.4f} / {np.median(r_vals):.4f} / {np.std(r_vals):.4f}")
 
     print("")
@@ -1683,12 +1799,23 @@ def plot_GIII_ratio_vs_G(
     print(f"  subset counts      : N_GIc={int(np.sum(ratio_i_mask))}, N_GIIIc={int(np.sum(ratio_iii_mask))}")
     print(f"  Uncertainty basis  : inverse-variance weighted mean (1/sigma^2)")
     print(f"  subset SE (legacy) : GIc={gic_std:.4f}, GIIIc={giiic_std:.4f} J/m^2")
+    print(f"  free-fit residual  : variant {free_fit_variant}")
     print("-" * 72)
     _print_fit_block(fit_nm2, "Model A (fixed n=m=2)")
     print("")
     _print_fit_block(fit_nm1, "Model B (fixed n=m=1)")
     print("")
     _print_fit_block(fit_nmfree, fit_nmfree['name'])
+    print("-" * 72)
+    print(f"  free-fit diagnostics:")
+    print(f"    starts total/success : {nm_starts_total} / {nm_starts_success}")
+    print(f"    boundary hits        : {nm_boundary_hits}")
+    if len(nm_top) > 1:
+        obj_gap = float(nm_top[1][0] - nm_top[0][0])
+        print(f"    objective gap (2nd-1st): {obj_gap:.6g}")
+    if nm_top:
+        bests = ", ".join([f"({n_i:.3f},{m_i:.3f}|{o_i:.4g})" for o_i, n_i, m_i in nm_top[:3]])
+        print(f"    top minima (n,m|obj): {bests}")
     print("=" * 72)
     print("")
 
@@ -1792,9 +1919,9 @@ def plot_GIII_ratio_vs_G(
     )
 
     phi_fit = np.linspace(0.0, np.pi / 2, 250)
-    r_fit_nm2 = np.array([_r_opt_from_phi(ph, n_val=2.0, m_val=2.0) for ph in phi_fit], dtype=float)
-    r_fit_nm1 = np.array([_r_opt_from_phi(ph, n_val=1.0, m_val=1.0) for ph in phi_fit], dtype=float)
-    r_fit_nmfree = np.array([_r_opt_from_phi(ph, n_val=n_opt, m_val=m_opt) for ph in phi_fit], dtype=float)
+    r_fit_nm2 = np.array([_r_opt_from_phi(ph, n_val=2.0, m_val=2.0, variant='B') for ph in phi_fit], dtype=float)
+    r_fit_nm1 = np.array([_r_opt_from_phi(ph, n_val=1.0, m_val=1.0, variant='B') for ph in phi_fit], dtype=float)
+    r_fit_nmfree = np.array([_r_opt_from_phi(ph, n_val=n_opt, m_val=m_opt, variant=free_fit_variant) for ph in phi_fit], dtype=float)
     ax.plot(
         phi_fit,
         r_fit_nm2,
@@ -1875,12 +2002,13 @@ def plot_surface_load_mode_III_ratio(
     labelpad_x=15,
     labelpad_y=15,
     frame_thickness=1,
+    total_weights_rel_err=0.01,
 ):
     """
-    Scatter plot of Mode III ratio over slope-normal surface load component.
+    Scatter plot of Mode III ratio over additional applied force.
 
     x-axis:
-        p_w,x = (m*g)/(n_w*50*290) * sin(phi)   [N/mm^2]
+        F_w = total_weights * g   [N]
     y-axis:
         psi_III = G_III / (G_I + G_III)
     """
@@ -1894,7 +2022,7 @@ def plot_surface_load_mode_III_ratio(
             print(f"Error loading parquet: {e}")
             return None
 
-    required_cols = ['total weights', 'weight number', 'phi', 'G1c', 'G3c']
+    required_cols = ['total weights', 'G1c', 'G3c']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         print(f"Error: Missing required columns: {missing_cols}")
@@ -1902,43 +2030,51 @@ def plot_surface_load_mode_III_ratio(
 
     plot_df = df.copy()
     # Use plain float dtypes to avoid pd.NA ambiguity in masks/comparisons.
-    plot_df['total_weights_kg'] = pd.to_numeric(plot_df['total weights'], errors='coerce').astype('float64')
-    plot_df['weight_number'] = pd.to_numeric(plot_df['weight number'], errors='coerce').astype('float64')
-    plot_df['phi'] = pd.to_numeric(plot_df['phi'], errors='coerce').astype('float64')
+    plot_df['total weights'] = pd.to_numeric(plot_df['total weights'], errors='coerce').astype('float64')
     plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce').astype('float64')
     plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce').astype('float64')
+    g1_unc_col = 'G1c_uncertainty' if 'G1c_uncertainty' in plot_df.columns else None
+    g3_unc_col = 'G3c_uncertainty' if 'G3c_uncertainty' in plot_df.columns else None
+    tw_unc_col = 'total weights_uncertainty' if 'total weights_uncertainty' in plot_df.columns else None
+    if g1_unc_col is not None:
+        plot_df['G1c_unc'] = pd.to_numeric(plot_df[g1_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+    else:
+        plot_df['G1c_unc'] = 0.0
+    if g3_unc_col is not None:
+        plot_df['G3c_unc'] = pd.to_numeric(plot_df[g3_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+    else:
+        plot_df['G3c_unc'] = 0.0
+    if tw_unc_col is not None:
+        plot_df['total_weights_unc'] = pd.to_numeric(plot_df[tw_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+    else:
+        plot_df['total_weights_unc'] = (plot_df['total weights'].abs() * abs(float(total_weights_rel_err))).astype('float64')
 
-    # Surface-load calculation requested by user (same as lines 1207-1213 logic).
-    plot_df['phi_rad'] = np.deg2rad(plot_df['phi'])
-    area_mm2 = plot_df['weight_number'] * 50.0 * 290.0
-    load_n = plot_df['total_weights_kg'] * 9.81
-    plot_df['surface_load_n_per_mm2'] = np.nan
-    valid_area = area_mm2.gt(0).fillna(False)
-    plot_df.loc[valid_area, 'surface_load_n_per_mm2'] = (
-        load_n.loc[valid_area] / area_mm2.loc[valid_area]
-    )
-    plot_df['p_wx'] = plot_df['surface_load_n_per_mm2'] * np.sin(plot_df['phi_rad'])
+    # Additional applied force from total mass.
+    # total weights are stored in kg; convert to force with g=9.81 m/s^2.
+    plot_df['F_w'] = plot_df['total weights'] * 9.81
 
     plot_df['G13_total'] = plot_df['G1c'] + plot_df['G3c']
     plot_df = plot_df.dropna(subset=['G13_total', 'G3c'])
     plot_df = plot_df[plot_df['G13_total'] > 0]
     if plot_df.empty:
-        print("No valid rows to plot (check total weights, weight number, phi, G1c, and G3c).")
+        print("No valid rows to plot (check total weights, G1c, and G3c).")
         return None
 
     plot_df['psi_III'] = plot_df['G3c'] / plot_df['G13_total']
-    # Keep datapoints without valid surface-load calculation and place them at x=0.
-    plot_df['p_wx_plot'] = pd.to_numeric(plot_df['p_wx'], errors='coerce').fillna(0.0)
-    # Split zero-load points around x=0 by slope sign for readability:
-    # negative phi slightly left, non-negative phi slightly right.
-    max_abs_pw = float(np.nanmax(np.abs(plot_df['p_wx_plot']))) if len(plot_df) else 0.0
-    zero_offset = max(max_abs_pw * 0.01, 1e-5)
-    zero_mask = np.isclose(plot_df['p_wx_plot'].to_numpy(dtype=float), 0.0, atol=1e-14)
-    neg_phi_mask = plot_df['phi'].to_numpy(dtype=float) < 0.0
-    shift = np.where(neg_phi_mask, -zero_offset, zero_offset)
-    p_plot = plot_df['p_wx_plot'].to_numpy(dtype=float)
-    p_plot[zero_mask] = shift[zero_mask]
-    plot_df['p_wx_plot'] = p_plot
+    # Keep datapoints without valid force calculation and place them at x=0.
+    plot_df['F_w_plot'] = pd.to_numeric(plot_df['F_w'], errors='coerce').fillna(0.0)
+    # x uncertainty from total-weights uncertainty (kg) propagated to force (N).
+    plot_df['F_w_unc'] = (9.81 * pd.to_numeric(plot_df['total_weights_unc'], errors='coerce')).fillna(0.0).clip(lower=0.0)
+    # y uncertainty propagation for psi_III = G3 / (G1 + G3).
+    g1 = plot_df['G1c'].to_numpy(dtype=float)
+    g3 = plot_df['G3c'].to_numpy(dtype=float)
+    sg1 = plot_df['G1c_unc'].to_numpy(dtype=float)
+    sg3 = plot_df['G3c_unc'].to_numpy(dtype=float)
+    s = np.maximum(g1 + g3, 1e-12)
+    dpsi_dg1 = -g3 / (s ** 2)
+    dpsi_dg3 = g1 / (s ** 2)
+    psi_unc = np.sqrt((dpsi_dg1 * sg1) ** 2 + (dpsi_dg3 * sg3) ** 2)
+    plot_df['psi_unc'] = np.clip(np.nan_to_num(psi_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
 
     # Match style behavior used across the project.
     setup_visualization_style()
@@ -1950,10 +2086,37 @@ def plot_surface_load_mode_III_ratio(
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
 
+    # Bars first (background), then markers on top (same style as mode interaction plots).
+    base_color = lo.COLORS['blue']
+    errorbar_color = _alpha_equivalent_color(base_color, ERRORBAR_STYLES['alpha'])
+    x_vals = plot_df['F_w_plot'].to_numpy(dtype=float)
+    y_vals = plot_df['psi_III'].to_numpy(dtype=float)
+    x_err_vals = plot_df['F_w_unc'].to_numpy(dtype=float)
+    y_err_vals = plot_df['psi_unc'].to_numpy(dtype=float)
+    for i in range(len(x_vals)):
+        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
+                [y_vals[i], y_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i], x_vals[i]],
+                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+
     ax.scatter(
-        plot_df['p_wx_plot'],
-        plot_df['psi_III'],
-        c=lo.COLORS['blue'],
+        x_vals,
+        y_vals,
+        c=base_color,
         s=marker_size ** 2 * 10,
         alpha=alpha,
         edgecolors='none',
@@ -1961,13 +2124,13 @@ def plot_surface_load_mode_III_ratio(
     )
 
     ax.set_xlabel(
-        r'Slope normal surface load $p_{\mathrm{w},x}$ (N/mm$^2$) $\longrightarrow$',
+        r'Additional force $F_{\mathrm{w}}$ (N) $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_x,
         color='black',
     )
     ax.set_ylabel(
-        r'Mode III ratio $\psi_{\mathrm{III}}=\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ (J/m²) $\longrightarrow$',
+        r'Mode III ratio $\psi_{\mathrm{III}}=\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_y,
         color='black',
@@ -2009,12 +2172,12 @@ def plot_pc_vs_g1(
     ylim=None,
 ):
     """
-    Plot fracture limit force P_c over Mode-I fracture energy G_I.
+    Plot fracture-limit moment a*P_c over Mode-I fracture energy G_I.
 
     x-axis:
         G_I = G1c [J/m^2]
     y-axis:
-        P_c force component [N]
+        M_c = a * P_c [N m], with a provided in mm
     """
     if isinstance(df_or_path, pd.DataFrame):
         df = df_or_path.copy()
@@ -2026,7 +2189,7 @@ def plot_pc_vs_g1(
             print(f"Error loading parquet: {e}")
             return None
 
-    required_cols = ['G1c', 'P_c']
+    required_cols = ['G1c', 'P_c', 'a']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         print(f"Error: Missing required columns: {missing_cols}")
@@ -2034,6 +2197,7 @@ def plot_pc_vs_g1(
 
     plot_df = df.copy()
     plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce')
+    plot_df['a'] = pd.to_numeric(plot_df['a'], errors='coerce').fillna(0.0)
 
     def _pc_force_value(v):
         pc_force = extract_pc_force(v)
@@ -2045,8 +2209,10 @@ def plot_pc_vs_g1(
             return np.nan
 
     plot_df['P_c_force'] = plot_df['P_c'].apply(_pc_force_value)
-    plot_df['P_c_force'] = pd.to_numeric(plot_df['P_c_force'], errors='coerce')
-    plot_df = plot_df.dropna(subset=['G1c', 'P_c_force'])
+    plot_df['P_c_force'] = pd.to_numeric(plot_df['P_c_force'], errors='coerce').fillna(0.0)
+    # a is given in mm, so a*P_c yields N*mm; convert to N*m by dividing by 1000.
+    plot_df['M_c_Nm'] = (plot_df['a'] * plot_df['P_c_force']) / 1000.0
+    plot_df = plot_df.dropna(subset=['G1c'])
     if plot_df.empty:
         print("No valid rows to plot (requires numeric G1c and P_c force).")
         return None
@@ -2062,14 +2228,14 @@ def plot_pc_vs_g1(
 
     ax.scatter(
         plot_df['G1c'],
-        plot_df['P_c_force'],
+        plot_df['M_c_Nm'],
         alpha=alpha,
         s=marker_size ** 2 * 10,
         facecolor=lo.COLORS['blue'],
         edgecolors='none',
         linewidths=0,
         marker='o',
-        label=r'$P_c$ vs $G_I$' if show_legend else '',
+        label=r'$a\,P_c$ vs $G_I$' if show_legend else '',
         zorder=2,
     )
 
@@ -2080,7 +2246,7 @@ def plot_pc_vs_g1(
         color='black',
     )
     ax.set_ylabel(
-        r'Fracture limit force $P_c$ (N) $\longrightarrow$',
+        r'Fracture limit moment $a\,P_c$ (N m) $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_y,
         color='black',

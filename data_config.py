@@ -21,11 +21,11 @@ import tempfile
 # ============================================================================
 
 # SMB Server connection
-SMB_SERVER_URL = 'smb://wsl.ch'
+SMB_SERVER_URL =  'smb://ismd-server.synology.me/Public'
 
 # Cross-platform server paths (check your operating system and update the paths)
 SERVER_PATHS = {
-    'macos': '/Volumes/fe/lawprae/LBI/Projects/210_Weak_Layer_Mechanics/Valle/01_experiments/2025_Mode_III_displacement_controlled',
+    'macos': '/Volumes/Public/04 phds/Adam/02_experiments/04_mode_III_DC',
     'linux': '',
     'windows': ''
 }
@@ -1214,6 +1214,8 @@ def calculate_err_weac(
     E_wl_err=0.25,
     nu_wl_err=0.05,
     pc_rel_err=0.01,
+    phi_err=1.0,
+    total_weights_rel_err=0.01,
 ):
     """
     Calculate WEAC differential fracture energies and their propagated uncertainties.
@@ -1258,6 +1260,11 @@ def calculate_err_weac(
         Absolute uncertainty of weak-layer Poisson ratio (-).
     pc_rel_err : float, default 0.01
         Relative uncertainty of P_c[1] (1% = 0.01).
+    phi_err : float, default 1.0
+        Absolute uncertainty of inclination angle phi (degrees).
+    total_weights_rel_err : float, default 0.01
+        Relative uncertainty of total weights used for surface-load calculation
+        (1% = 0.01).
 
     Returns
     -------
@@ -1348,13 +1355,15 @@ def calculate_err_weac(
         except Exception:
             return None
 
-    def _compute_load_vector(experiment, pc_force, h_s_value, rho_values):
+    def _compute_load_vector(experiment, pc_force, h_s_value, rho_values, phi_value, include_loading_head_mass=True):
         # Logic kept equivalent to notebook equations.
-        phi = float(experiment['phi'])
+        phi = float(phi_value)
         l_lh = 50.0  # loading-head length [mm]
 
         g = 9810.0  # mm/s^2
         m_lh = 0.5404 * 1e-3  # loading-head mass [tonne]
+        if not include_loading_head_mass:
+            m_lh = 0.0
         h_s_val = float(h_s_value)
         rho_vals = np.array(rho_values, dtype=float)
 
@@ -1374,7 +1383,7 @@ def calculate_err_weac(
 
         return np.array([F_x, F_y, F_z, M_x, M_y, M_z], dtype=float)
 
-    def _setup_weac_and_calculate_err(experiment, pc_force, h_s_value, rho_values, h_wl_value, E_wl_value, nu_wl_value, l_dw_value, L_value):
+    def _setup_weac_and_calculate_err(experiment, pc_force, h_s_value, rho_values, h_wl_value, E_wl_value, nu_wl_value, l_dw_value, L_value, phi_value, include_loading_head_mass=True):
         layers = [
             Layer(rho=float(rho_values[0]), h=float(h_s_value) / 4),
             Layer(rho=float(rho_values[1]), h=float(h_s_value) / 4),
@@ -1390,7 +1399,7 @@ def calculate_err_weac(
             constitutive_model='PlaneStrain'
         )
 
-        phi = float(experiment['phi'])
+        phi = float(phi_value)
         weight_number = experiment['weight number']
         a = float(experiment['a'])
         l_total = float(L_value)
@@ -1459,7 +1468,14 @@ def calculate_err_weac(
             theta=0,
             b=290,
             surface_load=surface_load,
-            load_vector_left=_compute_load_vector(experiment, pc_force, h_s_value, rho_values),
+            load_vector_left=_compute_load_vector(
+                experiment,
+                pc_force,
+                h_s_value,
+                rho_values,
+                phi,
+                include_loading_head_mass=include_loading_head_mass,
+            ),
             load_vector_right=np.array([0, 0, 0, 0, 0, 0], dtype=float),
         )
         config = Config(touchdown=False, backend='generalized')
@@ -1480,6 +1496,8 @@ def calculate_err_weac(
 
     g_columns = ['Gc', 'G1c', 'G2c', 'G3c']
     g_unc_columns = [f"{col}_uncertainty" for col in g_columns]
+    surface_load_col = 'surface_load'
+    surface_load_unc_col = 'surface_load_uncertainty'
 
     for col in g_columns:
         if col not in df_updated.columns:
@@ -1490,8 +1508,67 @@ def calculate_err_weac(
             df_updated[col] = np.nan
             print(f"Initialized missing column: {col}")
 
+    if surface_load_col not in df_updated.columns:
+        df_updated[surface_load_col] = np.nan
+        print(f"Initialized missing column: {surface_load_col}")
+    if surface_load_unc_col not in df_updated.columns:
+        df_updated[surface_load_unc_col] = np.nan
+        print(f"Initialized missing column: {surface_load_unc_col}")
+
+    # Compute and persist slope-normal surface load p_w and its propagated uncertainty.
+    # p_w = m*g / (n_w * 50 * 290), with g=9.81 m/s^2 -> N/mm^2.
+    total_weights_series = pd.to_numeric(df_updated['total weights'], errors='coerce')
+    weight_number_series = pd.to_numeric(df_updated['weight number'], errors='coerce')
+    valid_surface = total_weights_series.notna() & weight_number_series.notna() & (weight_number_series > 0)
+
+    surface_load_values = pd.Series(0.0, index=df_updated.index, dtype='float64')
+    surface_load_values.loc[valid_surface] = (
+        total_weights_series.loc[valid_surface] * 9.81
+        / (weight_number_series.loc[valid_surface] * 50.0 * 290.0)
+    )
+
+    sigma_m = total_weights_series.abs() * abs(float(total_weights_rel_err))
+    sigma_n = 0.0
+    surface_load_unc_values = pd.Series(0.0, index=df_updated.index, dtype='float64')
+    if (sigma_m > 0.0).any() or sigma_n > 0.0:
+        dp_dm = pd.Series(0.0, index=df_updated.index, dtype='float64')
+        dp_dn = pd.Series(0.0, index=df_updated.index, dtype='float64')
+        dp_dm.loc[valid_surface] = 9.81 / (weight_number_series.loc[valid_surface] * 50.0 * 290.0)
+        dp_dn.loc[valid_surface] = (
+            -total_weights_series.loc[valid_surface] * 9.81
+            / ((weight_number_series.loc[valid_surface] ** 2) * 50.0 * 290.0)
+        )
+        surface_load_unc_values.loc[valid_surface] = np.sqrt(
+            (dp_dm.loc[valid_surface] * sigma_m.loc[valid_surface]) ** 2 +
+            (dp_dn.loc[valid_surface] * sigma_n) ** 2
+        )
+
+    df_updated[surface_load_col] = surface_load_values.to_numpy(dtype=float)
+    df_updated[surface_load_unc_col] = surface_load_unc_values.to_numpy(dtype=float)
+
+    pst_id_col = 'AFM' if 'AFM' in df_updated.columns else ('AFN' if 'AFN' in df_updated.columns else None)
     pst_afn_set = {1, 2, 3, 4, 5, 6, 7}
-    pst_mask = df_updated['AFN'].apply(_afn_as_int).isin(pst_afn_set) if 'AFN' in df_updated.columns else pd.Series(False, index=df_updated.index)
+    if pst_id_col is not None:
+        pst_mask = df_updated[pst_id_col].apply(_afn_as_int).isin(pst_afn_set)
+    else:
+        pst_mask = pd.Series(False, index=df_updated.index)
+
+    # For PST ids (1..7): if P_c is missing/non-numeric, enforce explicit zero in stored data.
+    pst_pc_zeroed = 0
+    if 'P_c' in df_updated.columns and pst_mask.any():
+        for idx in df_updated.index[pst_mask]:
+            value = df_updated.at[idx, 'P_c']
+            pc_force_val = _extract_pc_force(value)
+            if pd.isna(pc_force_val):
+                already_zero_scalar = False
+                try:
+                    scalar_val = float(value)
+                    already_zero_scalar = bool(np.isfinite(scalar_val) and abs(scalar_val) < 1e-12)
+                except Exception:
+                    already_zero_scalar = False
+                if not already_zero_scalar:
+                    df_updated.at[idx, 'P_c'] = [0.0, 0.0]
+                    pst_pc_zeroed += 1
 
     if force_overwrite:
         target_mask = pd.Series(True, index=df_updated.index)
@@ -1502,7 +1579,7 @@ def calculate_err_weac(
         print("force_overwrite=False: computing only rows with missing G-values/uncertainties.")
     if pst_mask.any():
         print(
-            f"PST override active for AFN in {sorted(pst_afn_set)}: "
+            f"PST override active for {pst_id_col} in {sorted(pst_afn_set)}: "
             "calculating with P_c[1]=0 (same PST setup, without out-of-plane load from fracture force)."
         )
 
@@ -1517,7 +1594,7 @@ def calculate_err_weac(
             skipped_no_target += 1
             continue
 
-        afn_int = _afn_as_int(experiment['AFN']) if 'AFN' in experiment.index else None
+        afn_int = _afn_as_int(experiment[pst_id_col]) if pst_id_col in experiment.index else None
         is_pst_afn = afn_int in pst_afn_set
 
         if is_pst_afn:
@@ -1539,6 +1616,7 @@ def calculate_err_weac(
             h_wl_u = ufloat(float(h_wl), abs(float(h_wl_err)))
             E_wl_u = ufloat(float(E_wl), abs(float(E_wl_err)))
             nu_wl_u = ufloat(float(nu_wl), abs(float(nu_wl_err)))
+            phi_u = ufloat(float(experiment['phi']), abs(float(phi_err)))
 
             l_dw_nominal = float(experiment['l_dw']) if pd.notna(experiment['l_dw']) else 0.0
             L_nominal = float(experiment['L']) if pd.notna(experiment['L']) else 10000.0
@@ -1555,6 +1633,7 @@ def calculate_err_weac(
                 'h_wl': _ensure_positive(h_wl_u.nominal_value),
                 'E_wl': _ensure_positive(E_wl_u.nominal_value),
                 'nu_wl': _clip_nu(nu_wl_u.nominal_value),
+                'phi': float(phi_u.nominal_value),
                 'l_dw': _ensure_positive(l_dw_u.nominal_value),
                 'L': _ensure_positive(L_u.nominal_value),
             }
@@ -1569,8 +1648,10 @@ def calculate_err_weac(
                     h_wl_value=values['h_wl'],
                     E_wl_value=values['E_wl'],
                     nu_wl_value=values['nu_wl'],
+                    phi_value=values['phi'],
                     l_dw_value=values['l_dw'],
                     L_value=values['L'],
+                    include_loading_head_mass=not is_pst_afn,
                 )
 
             gdif_nom = _solve_with(base_values)
@@ -1589,6 +1670,7 @@ def calculate_err_weac(
                 'h_wl': float(h_wl_u.std_dev),
                 'E_wl': float(E_wl_u.std_dev),
                 'nu_wl': float(nu_wl_u.std_dev),
+                'phi': float(phi_u.std_dev),
                 'l_dw': float(l_dw_u.std_dev),
                 'L': float(L_u.std_dev),
             }
@@ -1702,6 +1784,18 @@ def calculate_err_weac(
             'data_type': 'Float',
             'long_name': 'uncertainty of mode III differential fracture energy',
             'description': 'Propagated one-sigma uncertainty of G3c from independent input uncertainties.'
+        },
+        'surface_load': {
+            'units': 'N/mm^2',
+            'data_type': 'Float',
+            'long_name': 'slope-normal surface load',
+            'description': 'Surface load used in WEAC scenario configuration: m*g/(n_w*50*290).'
+        },
+        'surface_load_uncertainty': {
+            'units': 'N/mm^2',
+            'data_type': 'Float',
+            'long_name': 'uncertainty of slope-normal surface load',
+            'description': 'Propagated one-sigma uncertainty of surface_load (hardcoded as zero; no input uncertainty for total weights and weight number).'
         }
     }
 
@@ -1747,9 +1841,13 @@ def calculate_err_weac(
     print("\nWEAC ERR calculation summary:")
     print(f"  - Rows computed (values + uncertainties): {computed}")
     print(f"  - Rows computed with PST override (AFN 1..7, P_c[1]=0): {pst_computed}")
+    print(f"  - PST rows with invalid P_c normalized to [0.0, 0.0]: {pst_pc_zeroed}")
+    print("  - Updated columns: surface_load, surface_load_uncertainty (N/mm^2)")
     print(f"  - Rows skipped (no target update required): {skipped_no_target}")
     print(f"  - Rows skipped (invalid/missing P_c[1]): {skipped_invalid_pc}")
     print(f"  - Rows failed during WEAC solve: {failed}")
+    print(f"  - Propagated angle uncertainty: phi ±{float(phi_err):g} deg")
+    print(f"  - Surface-load uncertainty: total weights relative error ±{100.0 * abs(float(total_weights_rel_err)):g}%")
 
     return df_updated, df_info_updated
 
@@ -2553,3 +2651,221 @@ def explore_parquet_data(afn, column_name, raw_data_path, raw_info_data_path):
     print("=" * 80)
     
     return None
+
+
+def opt_GI_GII_ODR(
+        df, dim=1, gc0=.6, exp=2, var='B',
+        indi=False, ifixb=[1, 1, 0, 0],
+        print_results=True, verbose=False):
+    """
+    Orthogonal distance regression for GI/GIII interaction law.
+
+    This function is adapted from regression.py (Mode I/II version) with
+    Mode II terms replaced by Mode III terms.
+    """
+    from uncertainties import unumpy
+    from collections import defaultdict
+    from itertools import product
+    from scipy.odr import RealData, Model, ODR
+    from scipy.stats import distributions
+
+    # Accept DataFrame directly or parquet path.
+    if isinstance(df, pd.DataFrame):
+        df_local = df.copy()
+    elif isinstance(df, (str, os.PathLike)):
+        try:
+            df_local = pd.read_parquet(df, engine='fastparquet')
+        except Exception:
+            df_local = pd.read_parquet(df)
+    else:
+        raise TypeError("opt_GI_GII_ODR: 'df' must be a pandas DataFrame or a parquet file path.")
+
+    # Harmonize common project column names (G1c/G3c -> GIc/GIIIc).
+    if 'GIc' not in df_local.columns and 'G1c' in df_local.columns:
+        df_local['GIc'] = df_local['G1c']
+    if 'GIIIc' not in df_local.columns and 'G3c' in df_local.columns:
+        df_local['GIIIc'] = df_local['G3c']
+
+    required_cols = ['GIc', 'GIIIc']
+    missing_cols = [col for col in required_cols if col not in df_local.columns]
+    if missing_cols:
+        raise ValueError(f"opt_GI_GII_ODR: Missing required columns: {missing_cols}")
+
+    def residual(beta, x, var='B', bounds=False):
+        GIc, GIIIc, n, m = beta
+        Gi, Giii = x
+
+        if bounds:
+            if not (1 <= n <= 10 and 1 <= m <= 10):
+                return 1e3
+
+        with np.errstate(invalid='ignore'):
+            if var == 'A':
+                res = ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (2 / (n + m)) - 1
+            elif var == 'B':
+                res = ((Gi / GIc) ** n + (Giii / GIIIc) ** m) - 1
+            elif var == 'C':
+                res = ((Gi / GIc) ** (1 / n) + (Giii / GIIIc) ** (1 / m)) - 1
+            elif var == 'BK':
+                res = (GIc + (GIIIc - GIc) * (Giii / (Gi + Giii)) ** m) / (Gi + Giii) - 1
+            else:
+                raise NotImplementedError(f'Criterion type {var} not implemented.')
+        return res
+
+    def param_jacobian(beta, x, var='B', *args):
+        GIc, GIIIc, n, m = beta
+        Gi, Giii = x
+
+        with np.errstate(invalid='ignore'):
+            if var == 'A':
+                dGIc = -(2 * Gi * (Gi / GIc) ** (-1 + n) * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * n) / (GIc ** 2 * (m + n))
+                dGIIIc = -((2 * Giii * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (Giii / GIIIc) ** (-1 + m) * m) / (GIIIc ** 2 * (m + n)))
+                dn = (((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (2 * (Gi / GIc) ** n * (m + n) * np.log(Gi / GIc) - 2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) * np.log((Gi / GIc) ** n + (Giii / GIIIc) ** m))) / (m + n) ** 2
+                dm = (((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (-2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) * np.log((Gi / GIc) ** n + (Giii / GIIIc) ** m) + 2 * (Giii / GIIIc) ** m * (m + n) * np.log(Giii / GIIIc))) / (m + n) ** 2
+            elif var == 'B':
+                dGIc = -(((Gi / GIc) ** n * n) / GIc)
+                dGIIIc = -(((Giii / GIIIc) ** m * m) / GIIIc)
+                dn = (Gi / GIc) ** n * np.log(Gi / GIc)
+                dm = (Giii / GIIIc) ** m * np.log(Giii / GIIIc)
+            elif var == 'C':
+                dGIc = -((Gi / GIc) ** (1 / n)) / (GIc * n)
+                dGIIIc = -((Giii / GIIIc) ** (1 / m)) / (GIIIc * m)
+                dn = -((Gi / GIc) ** (1 / n) * np.log(Gi / GIc)) / (n ** 2)
+                dm = -((Giii / GIIIc) ** (1 / m) * np.log(Giii / GIIIc)) / (m ** 2)
+            elif var == 'BK':
+                dGIc = (1 - (Giii / (Gi + Giii)) ** m) / (Gi + Giii)
+                dGIIIc = ((Giii / (Gi + Giii)) ** m) / (Gi + Giii)
+                dn = np.zeros_like(Gi)
+                dm = ((Giii / (Gi + Giii)) ** m * (GIIIc - GIc) * np.log(Giii / (Gi + Giii))) / (Gi + Giii)
+            else:
+                raise NotImplementedError(f'Criterion type {var} not implemented.')
+
+        return np.row_stack([dGIc, dGIIIc, dn, dm])
+
+    def value_jacobian(beta, x, var='B', *args):
+        GIc, GIIIc, n, m = beta
+        Gi, Giii = x
+
+        if var == 'A':
+            dGi = (2 * (Gi / GIc) ** n * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * n) / (Gi * (m + n))
+            dGiii = (2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (Giii / GIIIc) ** m * m) / (Giii * (m + n))
+        elif var == 'B':
+            dGi = ((Gi / GIc) ** n * n) / Gi
+            dGiii = ((Giii / GIIIc) ** m * m) / Giii
+        elif var == 'C':
+            dGi = ((Gi / GIc) ** (1 / n)) / (n * Gi)
+            dGiii = ((Giii / GIIIc) ** (1 / m)) / (m * Giii)
+        elif var == 'BK':
+            dGi = (-GIc + (1 + m) * (GIc - GIIIc) * (Giii / (Gi + Giii)) ** m) / (Gi + Giii) ** 2
+            dGiii = (-GIc * Giii + (Giii - m * Gi) * (GIc - GIIIc) * (Giii / (Gi + Giii)) ** m) / (Giii * (Gi + Giii) ** 2)
+        else:
+            raise NotImplementedError(f'Criterion type {var} not implemented.')
+
+        return np.row_stack([dGi, dGiii])
+
+    def assemble_data(df_local, dim_local=1, min_std=1e-9):
+        exp_local = np.row_stack(df_local[['GIc', 'GIIIc']].apply(unumpy.nominal_values).values.T).astype(float)
+        std_local = np.row_stack(df_local[['GIc', 'GIIIc']].apply(unumpy.std_devs).values.T).astype(float)
+
+        # Remove invalid rows and floor zero uncertainties to avoid ODR divide-by-zero.
+        valid = (
+            np.isfinite(exp_local[0]) & np.isfinite(exp_local[1]) &
+            np.isfinite(std_local[0]) & np.isfinite(std_local[1])
+        )
+        exp_local = exp_local[:, valid]
+        std_local = std_local[:, valid]
+        std_local = np.clip(std_local, min_std, None)
+
+        ndof_local = exp_local.shape[1] - 4
+        return RealData(exp_local, y=dim_local, sx=std_local), ndof_local
+
+    def get_initial_guesses(gc0=0.7, exp=2, indi=False, var='B', verbose=False):
+        if isinstance(exp, tuple) and len(exp) == 2:
+            n0 = [exp[0]]
+            m0 = [exp[1]]
+        elif isinstance(exp, (list, np.ndarray)):
+            n0 = m0 = exp
+        else:
+            if var == 'C':
+                n0 = m0 = np.linspace(1 / exp, 1, exp, endpoint=True)
+            else:
+                n0 = m0 = 1 + np.arange(exp)
+
+        if verbose:
+            print('Running the following initial guesses for the exponents (n, m):')
+            print(n0)
+            print()
+
+        if indi:
+            return list(product([gc0], [gc0], n0, m0))
+        return np.column_stack([np.full([len(n0), 2], gc0), n0, n0])
+
+    def run_regression(
+            data, model, beta0,
+            sstol=1e-12, partol=1e-12,
+            maxit=1000, ndigit=12,
+            ifixb=[1, 1, 0, 0],
+            fit_type=1, deriv=3,
+            init=0, iteration=0, final=0):
+        odr = ODR(
+            data,
+            model,
+            beta0=beta0,
+            sstol=sstol,
+            partol=partol,
+            maxit=maxit,
+            ndigit=ndigit,
+            ifixb=ifixb,
+        )
+        odr.set_job(fit_type=fit_type, deriv=deriv)
+        odr.set_iprint(init=init, iter=iteration, final=final)
+        return odr.run()
+
+    def calc_fit_statistics(final, ndof):
+        fit = defaultdict()
+        fit['params'] = final.beta
+        fit['stddev'] = final.sd_beta
+        fit['reduced_chi_squared'] = final.res_var
+        fit['chi_squared'] = ndof * fit['reduced_chi_squared']
+        fit['p_value'] = distributions.chi2.sf(fit['chi_squared'], ndof)
+        fit['R_squared'] = 1 - fit['chi_squared'] / (ndof + fit['chi_squared'])
+        fit['final'] = final
+        return fit
+
+    def results(fit):
+        GIc, GIIIc, n, m = fit['final'].beta
+        chi2 = fit['reduced_chi_squared']
+        pval = fit['p_value']
+        r2 = fit['R_squared']
+        header = 'Variable      Value    Description'.upper()
+        rule = '---'.join(['-' * s for s in [8, 5, 50]])
+        print(header)
+        print(rule)
+        print(f"GIc        {GIc:8.3f}    Mode I fracture toughness")
+        print(f"GIIIc      {GIIIc:8.3f}    Mode III fracture toughness")
+        print(f"n          {n:8.3f}    Interaction-law exponent")
+        print(f"m          {m:8.3f}    Interaction-law exponent")
+        print(rule)
+        print(f"chi2       {chi2:8.3f}    Reduced chi^2 per DOF (goodness of fit)")
+        print(f"p-value    {pval:8.1e}    p-value (statistically significant if below 0.05)")
+        print(f"R2         {r2:8.3f}    R-squared (not valid for nonlinear regression)")
+        print()
+
+    data, ndof = assemble_data(df_local, dim)
+    model = Model(
+        fcn=residual,
+        fjacb=param_jacobian,
+        fjacd=value_jacobian,
+        implicit=True,
+        extra_args=(var,)
+    )
+    guess = get_initial_guesses(gc0=gc0, exp=exp, indi=indi, var=var, verbose=verbose)
+    runs = [r for r in (run_regression(data, model, g, ifixb=ifixb) for g in guess) if r.info <= 3]
+    if not runs:
+        raise RuntimeError("ODR did not converge for any initial guess.")
+    final = runs[np.argmin([run.sum_square for run in runs])]
+    fit = calc_fit_statistics(final, ndof)
+    fit['var'] = var
+    if print_results:
+        results(fit)
+    return fit
