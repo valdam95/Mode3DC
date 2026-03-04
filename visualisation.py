@@ -1378,6 +1378,31 @@ def plot_mode_I_III_interaction(
             optimization_result = opt_param
             n_samples = max(int(fit_resolution), 50)
 
+            # Optional 95% confidence envelope in background.
+            band95 = optimization_result.get('band95', {})
+            xb = np.asarray(band95.get('x', []), dtype=float)
+            yb_lo = np.asarray(band95.get('y_low', []), dtype=float)
+            yb_hi = np.asarray(band95.get('y_high', []), dtype=float)
+            vband = (
+                xb.size > 1
+                and xb.size == yb_lo.size
+                and xb.size == yb_hi.size
+                and np.all(np.isfinite(xb))
+                and np.all(np.isfinite(yb_lo))
+                and np.all(np.isfinite(yb_hi))
+            )
+            if vband:
+                order = np.argsort(xb)
+                ax.fill_between(
+                    xb[order],
+                    yb_lo[order],
+                    yb_hi[order],
+                    color=lo.COLORS.get('blue', '#2588bf'),
+                    alpha=0.3,
+                    linewidth=0.0,
+                    zorder=-10,
+                )
+
             geo = optimization_result.get('geo_fit', {})
             n_geo = float(geo.get('n', np.nan))
             m_geo = float(geo.get('m', np.nan))
@@ -1395,9 +1420,9 @@ def plot_mode_I_III_interaction(
                     ax.plot(
                         x_geo[vgeo],
                         y_geo[vgeo],
-                        color=lo.COLORS.get('red', '#d71149'),
-                        linewidth=2.0,
-                        alpha=0.95,
+                        color=lo.COLORS.get('indigo', '#8319d7'),
+                        linewidth=1.5,
+                        alpha=0.9,
                         linestyle='-',
                         zorder=4,
                     )
@@ -2523,6 +2548,7 @@ def plot_mode_III_ratio_to_GIGIII(
     frame_thickness=1,
     x_lim=None,
     y_lim=None,
+    fit_param=None,
     n=None,
     m=None,
     GIIIc=None,
@@ -2678,45 +2704,75 @@ def plot_mode_III_ratio_to_GIGIII(
         zorder=1,
     )
 
-    # Optional red interaction curve from user-provided n, m, GIIIc
-    # with GIc estimated automatically from PST rows.
-    if n is not None and m is not None and GIIIc is not None:
+    fit_band_color = lo.COLORS.get('blue', '#2588bf')
+    fit_line_color = lo.COLORS.get('indigo', '#000a51')
+
+    # Preferred source: precomputed fit_param from optimizer.
+    n_fit = m_fit = giii_fit = np.nan
+    if isinstance(fit_param, dict):
+        band = fit_param.get('band95_ratio', fit_param.get('band95', {}))
+        xb = np.asarray(band.get('x', []), dtype=float)
+        yb_lo = np.asarray(band.get('y_low', []), dtype=float)
+        yb_hi = np.asarray(band.get('y_high', []), dtype=float)
+        vband = (
+            xb.size > 1 and xb.size == yb_lo.size and xb.size == yb_hi.size
+            and np.all(np.isfinite(xb)) and np.all(np.isfinite(yb_lo)) and np.all(np.isfinite(yb_hi))
+        )
+        if vband:
+            order = np.argsort(xb)
+            ax.fill_between(
+                xb[order],
+                yb_lo[order],
+                yb_hi[order],
+                color=fit_band_color,
+                alpha=0.3,
+                linewidth=0.0,
+                zorder=-10,
+            )
+        geo = fit_param.get('geo_fit', {})
+        n_fit = float(geo.get('n', np.nan))
+        m_fit = float(geo.get('m', np.nan))
+        giii_fit = float(geo.get('giiic', np.nan))
+
+    # Fallback to explicit parameters if fit_param not supplied.
+    if not (np.isfinite(n_fit) and np.isfinite(m_fit) and np.isfinite(giii_fit)):
         try:
-            n_val = float(n)
-            m_val = float(m)
-            giiic_val = float(GIIIc)
+            n_fit = float(n)
+            m_fit = float(m)
+            giii_fit = float(GIIIc)
         except Exception:
-            n_val = m_val = giiic_val = np.nan
-        if (
-            np.isfinite(n_val) and np.isfinite(m_val) and np.isfinite(giiic_val)
-            and n_val > 0.0 and m_val > 0.0 and giiic_val > 0.0
-            and np.isfinite(gic_ref) and gic_ref > 0.0
-        ):
-            t = np.linspace(0.0, 1.0, max(int(fit_curve_samples), 200))
-            gi_curve = gic_ref * t
-            with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
-                giii_curve = giiic_val * np.power(np.clip(1.0 - np.power(t, n_val), 0.0, None), 1.0 / m_val)
-            gsum_curve = gi_curve + giii_curve
-            psi_curve = np.divide(giii_curve, np.maximum(gsum_curve, 1e-12))
-            valid_curve = np.isfinite(psi_curve) & np.isfinite(gsum_curve)
-            if np.any(valid_curve):
-                # Sort by psi for visually clean plotting in this coordinate system.
-                order = np.argsort(psi_curve[valid_curve])
-                ax.plot(
-                    psi_curve[valid_curve][order],
-                    gsum_curve[valid_curve][order],
-                    color=lo.COLORS.get('red', '#d71149'),
-                    linewidth=2.0,
-                    alpha=0.95,
-                    linestyle='-',
-                    zorder=3,
-                )
-            print("")
-            print("[plot_mode_III_ratio_to_GIGIII] Red interaction overlay")
-            print(f"  GIc (auto, PST AFN 1..7): {gic_ref:.4f} +/- {gic_ref_sem:.4f} J/m^2 (n={gic_ref_n})")
-            print(f"  n={n_val:.4f}, m={m_val:.4f}, GIIIc={giiic_val:.4f} J/m^2")
-        else:
-            print("[plot_mode_III_ratio_to_GIGIII] Red interaction overlay skipped: invalid n/m/GIIIc or GIc reference.")
+            n_fit = m_fit = giii_fit = np.nan
+
+    # Interaction overlay with GIc estimated automatically from PST rows.
+    if (
+        np.isfinite(n_fit) and np.isfinite(m_fit) and np.isfinite(giii_fit)
+        and n_fit > 0.0 and m_fit > 0.0 and giii_fit > 0.0
+        and np.isfinite(gic_ref) and gic_ref > 0.0
+    ):
+        t = np.linspace(0.0, 1.0, max(int(fit_curve_samples), 200))
+        gi_curve = gic_ref * t
+        with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+            giii_curve = giii_fit * np.power(np.clip(1.0 - np.power(t, n_fit), 0.0, None), 1.0 / m_fit)
+        gsum_curve = gi_curve + giii_curve
+        psi_curve = np.divide(giii_curve, np.maximum(gsum_curve, 1e-12))
+        valid_curve = np.isfinite(psi_curve) & np.isfinite(gsum_curve)
+        if np.any(valid_curve):
+            order = np.argsort(psi_curve[valid_curve])
+            ax.plot(
+                psi_curve[valid_curve][order],
+                gsum_curve[valid_curve][order],
+                color=fit_line_color,
+                linewidth=1.5,
+                alpha=0.9,
+                linestyle='-',
+                zorder=3,
+            )
+        print("")
+        print("[plot_mode_III_ratio_to_GIGIII] Interaction overlay")
+        print(f"  GIc (auto, PST AFN 1..7): {gic_ref:.4f} +/- {gic_ref_sem:.4f} J/m^2 (n={gic_ref_n})")
+        print(f"  n={n_fit:.4f}, m={m_fit:.4f}, GIIIc={giii_fit:.4f} J/m^2")
+    elif (fit_param is not None) or (n is not None and m is not None and GIIIc is not None):
+        print("[plot_mode_III_ratio_to_GIGIII] Interaction overlay skipped: invalid n/m/GIIIc or GIc reference.")
 
     ax.set_xlabel(
         r'Mode III ratio $\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',

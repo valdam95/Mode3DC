@@ -2968,10 +2968,14 @@ def optimize_mode_I_III_interaction(
     use_plateau_cap_for_geo=True,
     plateau_p_min=1,
     plateau_p_max=30,
-    plateau_cap_step=0.1,
-    plateau_rel_tol=0.002,
-    plateau_abs_tol=0.1,
-    plateau_consecutive=5,
+    plateau_cap_step=0.01,
+    plateau_rel_tol=0.001,
+    plateau_abs_tol=0.05,
+    plateau_consecutive=7,
+    plateau_window_steps=10,
+    plateau_min_span=1.0,
+    sigma_rel_floor=0.03,
+    sigma_abs_floor=1e-4,
     fit_resolution=1000,
     print_results=True,
 ):
@@ -3014,8 +3018,8 @@ def optimize_mode_I_III_interaction(
     eps = 1e-12
     gi = np.clip(work['G1c'].to_numpy(dtype=float), eps, None)
     giii = np.clip(work['G3c'].to_numpy(dtype=float), eps, None)
-    sx = np.clip(work['G1c_unc'].to_numpy(dtype=float), 1e-9, None)
-    sy = np.clip(work['G3c_unc'].to_numpy(dtype=float), 1e-9, None)
+    sx_raw = np.clip(work['G1c_unc'].to_numpy(dtype=float), 0.0, None)
+    sy_raw = np.clip(work['G3c_unc'].to_numpy(dtype=float), 0.0, None)
     afn = work['AFN_num'].to_numpy(dtype=float)
 
     afn_round = np.rint(afn)
@@ -3041,6 +3045,10 @@ def optimize_mode_I_III_interaction(
         giiic_ref = float(np.nanmedian(giii))
     g13 = gi + giii
     max_ratio_iii = float(np.nanmax(np.divide(giii, np.maximum(g13, eps)))) if g13.size else np.nan
+    # Ratio diagnostics excluding PST (requested for reporting).
+    ratio_all = np.divide(giii, np.maximum(g13, eps))
+    ratio_mask = non_pst_mask if np.any(non_pst_mask) else np.ones_like(ratio_all, dtype=bool)
+    ratio_nonpst = ratio_all[ratio_mask]
     n_samples = max(int(fit_resolution), 50)
 
     def _quality(red):
@@ -3054,43 +3062,108 @@ def optimize_mode_I_III_interaction(
             return "acceptable"
         return "poor"
 
-    def _orth_stats(n_eval, m_eval, gic_eval, giiic_eval, curve_samples):
+    def _orth_stats(n_eval, m_eval, gic_eval, giiic_eval, curve_samples, n_params=2):
         n_eval = max(float(n_eval), 1e-9)
         m_eval = max(float(m_eval), 1e-9)
         gic_eval = max(float(gic_eval), eps)
         giiic_eval = max(float(giiic_eval), eps)
+
+        # Relative + absolute uncertainty floor to avoid extreme weights for tiny G.
+        sx_eff = np.maximum.reduce([
+            sx_raw,
+            np.full_like(sx_raw, max(float(sigma_abs_floor), 1e-12)),
+            np.abs(gi) * max(float(sigma_rel_floor), 0.0),
+        ])
+        sy_eff = np.maximum.reduce([
+            sy_raw,
+            np.full_like(sy_raw, max(float(sigma_abs_floor), 1e-12)),
+            np.abs(giii) * max(float(sigma_rel_floor), 0.0),
+        ])
+
         implicit = (gi / gic_eval) ** n_eval + (giii / giiic_eval) ** m_eval - 1.0
         t = np.linspace(0.0, 1.0, max(int(curve_samples), 200))
         t_dense = np.unique(np.concatenate([t, t ** 2, 1.0 - (1.0 - t) ** 2]))
-        x_curve = np.clip(gic_eval * t_dense, 0.0, gic_eval)
+        t_curve = np.clip(t_dense, 0.0, 1.0)
+        x_curve = np.clip(gic_eval * t_curve, 0.0, gic_eval)
         with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
-            term = 1.0 - (x_curve / gic_eval) ** n_eval
+            term = 1.0 - np.power(np.clip(t_curve, 0.0, 1.0), n_eval)
             y_curve = np.full_like(x_curve, np.nan, dtype=float)
             msk = term >= 0.0
             y_curve[msk] = giiic_eval * np.power(term[msk], 1.0 / m_eval)
         mskc = np.isfinite(x_curve) & np.isfinite(y_curve)
         x_curve = x_curve[mskc]
         y_curve = y_curve[mskc]
+        t_curve = t_curve[mskc]
         if x_curve.size < 2:
             x_curve = np.array([0.0, gic_eval], dtype=float)
             y_curve = np.array([giiic_eval, 0.0], dtype=float)
+            t_curve = np.array([0.0, 1.0], dtype=float)
 
+        # Coarse nearest sample search.
         dx = gi[:, None] - x_curve[None, :]
         dy = giii[:, None] - y_curve[None, :]
         d2 = dx ** 2 + dy ** 2
         idx = np.argmin(d2, axis=1)
-        orth_abs = np.sqrt(np.maximum(d2[np.arange(gi.size), idx], 0.0))
+
+        # Refine projection to local polyline segments around nearest sample.
+        # This is a continuous projection and much less grid-biased than pure
+        # nearest-node distance.
+        proj_x = np.empty_like(gi)
+        proj_y = np.empty_like(giii)
+        proj_t = np.empty_like(gi)
+        orth_abs = np.empty_like(gi)
+        for i in range(gi.size):
+            p0 = int(idx[i])
+            candidates = []
+            if p0 > 0:
+                candidates.append((p0 - 1, p0))
+            if p0 < (x_curve.size - 1):
+                candidates.append((p0, p0 + 1))
+            if not candidates:
+                candidates.append((p0, p0))
+
+            best_d2 = np.inf
+            best_x = x_curve[p0]
+            best_y = y_curve[p0]
+            best_t = t_curve[p0]
+            px = gi[i]
+            py = giii[i]
+
+            for a, b in candidates:
+                xa, ya, ta = x_curve[a], y_curve[a], t_curve[a]
+                xb, yb, tb = x_curve[b], y_curve[b], t_curve[b]
+                vx = xb - xa
+                vy = yb - ya
+                vv = vx * vx + vy * vy
+                if vv <= 1e-18:
+                    qx, qy, qt = xa, ya, ta
+                else:
+                    u = ((px - xa) * vx + (py - ya) * vy) / vv
+                    u = min(max(u, 0.0), 1.0)
+                    qx = xa + u * vx
+                    qy = ya + u * vy
+                    qt = ta + u * (tb - ta)
+                d2_seg = (px - qx) ** 2 + (py - qy) ** 2
+                if d2_seg < best_d2:
+                    best_d2 = d2_seg
+                    best_x, best_y, best_t = qx, qy, qt
+
+            proj_x[i] = best_x
+            proj_y[i] = best_y
+            proj_t[i] = best_t
+            orth_abs[i] = np.sqrt(max(best_d2, 0.0))
+
         orth = np.sign(implicit) * orth_abs
-        gi_p = np.clip(x_curve[idx], eps, None)
-        giii_p = np.clip(y_curve[idx], eps, None)
+        gi_p = np.clip(proj_x, eps, None)
+        giii_p = np.clip(proj_y, eps, None)
         dfx = n_eval * np.power(gi_p / gic_eval, n_eval - 1.0) / gic_eval
         dfy = m_eval * np.power(giii_p / giiic_eval, m_eval - 1.0) / giiic_eval
         gnorm = np.sqrt(dfx ** 2 + dfy ** 2)
         gnorm = np.clip(np.nan_to_num(gnorm, nan=1e-12, posinf=1e12, neginf=1e-12), 1e-12, None)
-        sorth = np.sqrt((dfx * sx) ** 2 + (dfy * sy) ** 2) / gnorm
+        sorth = np.sqrt((dfx * sx_eff) ** 2 + (dfy * sy_eff) ** 2) / gnorm
         sorth = np.clip(np.nan_to_num(sorth, nan=1e-9, posinf=1e9, neginf=1e-9), 1e-9, None)
         chi2 = float(np.sum((orth / sorth) ** 2))
-        dof = max(int(gi.size) - 2, 1)
+        dof = max(int(gi.size) - int(max(n_params, 0)), 1)
         return {
             'chi2': chi2,
             'red_chi2': float(chi2 / dof),
@@ -3098,6 +3171,36 @@ def optimize_mode_I_III_interaction(
             'x_curve': x_curve,
             'y_curve': y_curve,
         }
+
+    # Uncertainty for ratio r=GIII/(GI+GIII), consistent with sigma floor model.
+    sx_eff_ratio = np.maximum.reduce([
+        sx_raw,
+        np.full_like(sx_raw, max(float(sigma_abs_floor), 1e-12)),
+        np.abs(gi) * max(float(sigma_rel_floor), 0.0),
+    ])
+    sy_eff_ratio = np.maximum.reduce([
+        sy_raw,
+        np.full_like(sy_raw, max(float(sigma_abs_floor), 1e-12)),
+        np.abs(giii) * max(float(sigma_rel_floor), 0.0),
+    ])
+    s_ratio = np.maximum(g13, eps)
+    dr_dg1 = -giii / (s_ratio ** 2)
+    dr_dg3 = gi / (s_ratio ** 2)
+    ratio_unc_all = np.sqrt((dr_dg1 * sx_eff_ratio) ** 2 + (dr_dg3 * sy_eff_ratio) ** 2)
+
+    if ratio_nonpst.size > 0:
+        nonpst_idx = np.where(ratio_mask)[0]
+        i_max_loc = int(np.argmax(ratio_nonpst))
+        i_min_loc = int(np.argmin(ratio_nonpst))
+        i_max = int(nonpst_idx[i_max_loc])
+        i_min = int(nonpst_idx[i_min_loc])
+        ratio_nonpst_max = float(ratio_all[i_max])
+        ratio_nonpst_min = float(ratio_all[i_min])
+        ratio_nonpst_max_unc = float(ratio_unc_all[i_max])
+        ratio_nonpst_min_unc = float(ratio_unc_all[i_min])
+    else:
+        ratio_nonpst_max = ratio_nonpst_min = np.nan
+        ratio_nonpst_max_unc = ratio_nonpst_min_unc = np.nan
 
     forced_fits = []
 
@@ -3118,7 +3221,7 @@ def optimize_mode_I_III_interaction(
             has_scalar = True
         except Exception:
             has_scalar = False
-        chi2_vals = []
+        red_vals = []
         for p_scan in p_vals:
             def _obj_g3(g3):
                 return float(_orth_stats(p_scan, p_scan, gic_ref, float(g3), max(350, int(n_samples // 2)))['chi2'])
@@ -3130,27 +3233,39 @@ def optimize_mode_I_III_interaction(
                         g3_opt = float(r.x)
                 except Exception:
                     pass
-            st = _orth_stats(p_scan, p_scan, gic_ref, g3_opt, max(n_samples, 1200))
-            chi2_vals.append(float(st['chi2']))
+            st = _orth_stats(p_scan, p_scan, gic_ref, g3_opt, max(n_samples, 1200), n_params=1)
+            red_vals.append(float(st['red_chi2']))
             plateau_fit['rows'].append({'p': float(p_scan), 'giiic': float(g3_opt), 'chi2': float(st['chi2']),
                                         'red_chi2': float(st['red_chi2']), 'rmse': float(st['rmse_orth'])})
-        if len(chi2_vals) >= 2:
-            d_abs = [chi2_vals[i - 1] - chi2_vals[i] for i in range(1, len(chi2_vals))]
-            d_rel = [(d_abs[i] / max(abs(chi2_vals[i]), 1e-12)) for i in range(len(d_abs))]
-            flags = [(d_abs[i] <= float(plateau_abs_tol)) and (d_rel[i] <= float(plateau_rel_tol)) for i in range(len(d_abs))]
-            run, idx = 0, None
+        if len(red_vals) >= 2:
+            # Robust plateau criterion on reduced chi^2:
+            # - use monotone envelope to suppress local wiggles/minima artifacts
+            # - use windowed gains over multiple steps
+            # - enforce a minimum p-span before allowing plateau stop
+            red_arr = np.asarray(red_vals, dtype=float)
+            red_env = np.minimum.accumulate(red_arr)
+            w = max(int(plateau_window_steps), 1)
             k = max(int(plateau_consecutive), 1)
-            for i, f in enumerate(flags):
-                run = run + 1 if f else 0
+            min_span = max(float(plateau_min_span), 0.0)
+            abs_tol = float(plateau_abs_tol)
+            rel_tol = float(plateau_rel_tol)
+
+            run, idx = 0, None
+            for i in range(w, len(red_env)):
+                gain_abs = float(red_env[i - w] - red_env[i])
+                gain_rel = float(gain_abs / max(abs(red_env[i - w]), 1e-12))
+                span_ok = (float(p_vals[i]) - float(p_vals[0])) >= min_span
+                is_flat = (gain_abs <= abs_tol) and (gain_rel <= rel_tol) and span_ok
+                run = run + 1 if is_flat else 0
                 if run >= k:
-                    idx = i - k + 2
+                    idx = i - k + 1
                     break
             if idx is not None:
                 p_start = float(p_vals[idx])
                 p_sel = float(max(p_start - p_step, p_lo))
             else:
                 p_start = np.nan
-                p_sel = float(p_vals[int(np.argmin(chi2_vals))])
+                p_sel = float(p_vals[int(np.argmin(red_env))])
             row_sel = next((r for r in plateau_fit['rows'] if np.isclose(float(r['p']), float(p_sel), atol=1e-12)), None)
             if row_sel is not None:
                 plateau_fit.update({
@@ -3162,71 +3277,175 @@ def optimize_mode_I_III_interaction(
                     'rmse_selected': float(row_sel['rmse']),
                 })
 
-    # Free red-fit with n=m=p and free GIIIc.
-    try:
-        from scipy.optimize import minimize
-        seed_axis = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 20.0, 35.0, 50.0], dtype=float)
-        giii_scales = np.array([0.6, 0.8, 1.0, 1.2, 1.5], dtype=float)
-        seeds = [(float(a), float(max(giiic_ref * s, eps))) for a in seed_axis for s in giii_scales]
-        giiic_upper = float(max(3.0 * giiic_ref, 1.5 * np.nanmax(giii), eps))
+    # Profile-chi2 uncertainty band for p (n=m): Delta chi2 thresholds for 1 parameter.
+    p_ci68 = (np.nan, np.nan)
+    p_ci95 = (np.nan, np.nan)
+    p_unc68 = np.nan
+    band95 = {
+        'x': np.array([]),
+        'y_low': np.array([]),
+        'y_high': np.array([]),
+        'y_min': np.array([]),
+        'y_max': np.array([]),
+        'n_curves': 0,
+        'chi2_reference': np.nan,
+        'delta_chi2': 3.84,
+        'definition': 'profile_1param_selected_ref',
+        'quantiles': (0.025, 0.975),
+    }
+    band95_ratio = {
+        'x': np.array([]),          # psi grid
+        'y_low': np.array([]),      # central 95% band for G_total
+        'y_high': np.array([]),
+        'y_min': np.array([]),      # conservative hull in transformed space
+        'y_max': np.array([]),
+        'n_curves': 0,
+        'chi2_reference': np.nan,
+        'delta_chi2': 3.84,
+        'definition': 'profile_1param_selected_ref',
+        'quantiles': (0.025, 0.975),
+    }
+    if plateau_fit['rows']:
+        p_arr = np.array([float(r['p']) for r in plateau_fit['rows']], dtype=float)
+        chi2_arr = np.array([float(r['chi2']) for r in plateau_fit['rows']], dtype=float)
+        valid = np.isfinite(p_arr) & np.isfinite(chi2_arr)
+        if np.any(valid):
+            p_arr = p_arr[valid]
+            chi2_arr = chi2_arr[valid]
+            chi2_min = float(np.min(chi2_arr))
+            mask68 = chi2_arr <= (chi2_min + 1.0)      # ~68% for 1 parameter
+            mask95 = chi2_arr <= (chi2_min + 3.84)     # ~95% for 1 parameter
+            if np.any(mask68):
+                p_ci68 = (float(np.min(p_arr[mask68])), float(np.max(p_arr[mask68])))
+            if np.any(mask95):
+                p_ci95 = (float(np.min(p_arr[mask95])), float(np.max(p_arr[mask95])))
+            p_sel_ref = float(plateau_fit['p_selected']) if np.isfinite(plateau_fit.get('p_selected', np.nan)) else float(np.min(p_arr))
+            if np.all(np.isfinite(p_ci68)):
+                p_unc68 = float(max(abs(p_sel_ref - p_ci68[0]), abs(p_ci68[1] - p_sel_ref)))
 
-        def _obj_geo(x):
-            p_try, g3_try = float(x[0]), float(x[1])
-            if p_try <= 0.05 or g3_try <= eps or (not np.isfinite(p_try + g3_try)):
-                return 1e18
-            return float(_orth_stats(p_try, p_try, gic_ref, g3_try, max(350, int(n_samples // 2)))['chi2'])
-
-        runs = []
-        for p0, g0 in seeds:
-            geo_fit['starts_total'] += 1
-            try:
-                r = minimize(_obj_geo, x0=np.array([p0, g0]), method='L-BFGS-B', bounds=[(0.05, 50.0), (eps, giiic_upper)])
-                if r.success and np.all(np.isfinite(r.x)) and np.isfinite(r.fun):
-                    geo_fit['starts_success'] += 1
-                    runs.append((float(r.fun), float(r.x[0]), float(r.x[1])))
-            except Exception:
-                continue
-        if runs:
-            runs.sort(key=lambda t: t[0])
-            _, p_geo, g3_geo = runs[0]
-            st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200))
-            geo_fit.update({'n': p_geo, 'm': p_geo, 'giiic': g3_geo, 'chi2': st['chi2'], 'red_chi2': st['red_chi2'],
-                            'rmse_orth': st['rmse_orth'], 'quality': _quality(st['red_chi2']),
-                            'method': 'multistart nearest-arc orthogonal (n=m, free GIIIc; L-BFGS-B)'})
-
-        if bool(use_plateau_cap_for_geo):
-            p_lo = max(float(plateau_p_min), 1.0)
-            p_hi = max(float(plateau_p_max), p_lo)
-            p_step = max(float(plateau_cap_step), 1e-6)
-            nm_caps = np.arange(p_lo, p_hi + 0.5 * p_step, p_step, dtype=float)
-            best_overall, prev, run, used_cap = None, None, 0, np.nan
-            for cap in nm_caps:
-                seed_p = min(max(float(geo_fit['n']) if np.isfinite(geo_fit['n']) else 2.0, 0.05), cap)
-                seed_g = min(max(float(geo_fit['giiic']) if np.isfinite(geo_fit['giiic']) else giiic_ref, eps), giiic_upper)
-                try:
-                    r = minimize(_obj_geo, x0=np.array([seed_p, seed_g]), method='L-BFGS-B',
-                                 bounds=[(0.05, cap), (eps, giiic_upper)])
-                    if not (r.success and np.all(np.isfinite(r.x)) and np.isfinite(r.fun)):
-                        continue
-                except Exception:
+            # Build 95% profile band relative to the selected estimator.
+            # This guarantees the selected p is inside the reported interval.
+            x_band = np.linspace(eps, max(float(gic_ref), eps), n_samples)
+            y_curves = []
+            ysum_curves = []
+            delta_95 = 3.84  # profile threshold for one parameter at 95%
+            chi2_ref = float(plateau_fit['chi2_selected']) if np.isfinite(plateau_fit.get('chi2_selected', np.nan)) else chi2_min
+            chi2_cut = chi2_ref + delta_95
+            for row in plateau_fit['rows']:
+                chi2_row = float(row.get('chi2', np.nan))
+                if not np.isfinite(chi2_row) or chi2_row > chi2_cut:
                     continue
-                best_cap = (float(r.fun), float(r.x[0]), float(r.x[1]))
-                best_overall, used_cap = best_cap, float(cap)
-                if prev is not None:
-                    d_abs = float(prev - best_cap[0])
-                    d_rel = float(d_abs / max(abs(prev), 1e-12))
-                    run = run + 1 if ((d_abs <= float(plateau_abs_tol)) and (d_rel <= float(plateau_rel_tol))) else 0
-                    if run >= max(int(plateau_consecutive), 1):
-                        break
-                prev = float(best_cap[0])
-            if best_overall is not None:
-                _, p_geo, g3_geo = best_overall
-                st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200))
-                geo_fit.update({'n': p_geo, 'm': p_geo, 'giiic': g3_geo, 'chi2': st['chi2'], 'red_chi2': st['red_chi2'],
-                                'rmse_orth': st['rmse_orth'], 'quality': _quality(st['red_chi2']),
-                                'method': f"multistart nearest-arc orthogonal (n=m, free GIIIc; adaptive-plateau-stop at cap={used_cap:.2f})"})
-    except Exception:
-        pass
+                p_row = float(row.get('p', np.nan))
+                g_row = float(row.get('giiic', np.nan))
+                if not (np.isfinite(p_row) and p_row > 0 and np.isfinite(g_row) and g_row > 0):
+                    continue
+                with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+                    term = 1.0 - (x_band / max(float(gic_ref), eps)) ** p_row
+                    y_row = np.full_like(x_band, np.nan, dtype=float)
+                    vm = term >= 0.0
+                    y_row[vm] = g_row * (term[vm] ** (1.0 / p_row))
+                y_curves.append(y_row)
+                ysum_curves.append(x_band + y_row)
+            if y_curves:
+                y_mat = np.row_stack(y_curves)
+                q_lo, q_hi = np.nanquantile(y_mat, [0.025, 0.975], axis=0)
+                y_min = np.nanmin(y_mat, axis=0)
+                y_max = np.nanmax(y_mat, axis=0)
+                vband = (
+                    np.isfinite(x_band) & np.isfinite(q_lo) & np.isfinite(q_hi)
+                    & np.isfinite(y_min) & np.isfinite(y_max)
+                    & (q_hi >= q_lo) & (y_max >= y_min) & (q_lo >= 0.0)
+                )
+                if np.any(vband):
+                    band95 = {
+                        'x': x_band[vband],
+                        'y_low': q_lo[vband],
+                        'y_high': q_hi[vband],
+                        'y_min': y_min[vband],
+                        'y_max': y_max[vband],
+                        'n_curves': int(len(y_curves)),
+                        'chi2_reference': float(chi2_ref),
+                        'delta_chi2': float(delta_95),
+                        'definition': 'profile_1param_selected_ref',
+                        'quantiles': (0.025, 0.975),
+                    }
+
+                # Build transformed band for plot_mode_III_ratio_to_GIGIII.
+                ysum_mat = np.row_stack(ysum_curves)
+                with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+                    psi_mat = np.divide(y_mat, np.maximum(ysum_mat, eps))
+                psi_grid = np.linspace(0.0, 1.0, n_samples)
+                gsum_interp_rows = []
+                for k in range(psi_mat.shape[0]):
+                    psi_k = psi_mat[k]
+                    gsum_k = ysum_mat[k]
+                    vm_k = np.isfinite(psi_k) & np.isfinite(gsum_k)
+                    if np.sum(vm_k) < 2:
+                        continue
+                    psi_s = psi_k[vm_k]
+                    gsum_s = gsum_k[vm_k]
+                    order = np.argsort(psi_s)
+                    psi_s = psi_s[order]
+                    gsum_s = gsum_s[order]
+                    # remove duplicate psi for stable interpolation
+                    uniq_mask = np.concatenate(([True], np.diff(psi_s) > 1e-12))
+                    psi_s = psi_s[uniq_mask]
+                    gsum_s = gsum_s[uniq_mask]
+                    if psi_s.size < 2:
+                        continue
+                    g_interp = np.interp(psi_grid, psi_s, gsum_s, left=np.nan, right=np.nan)
+                    gsum_interp_rows.append(g_interp)
+                if gsum_interp_rows:
+                    gsum_interp_mat = np.row_stack(gsum_interp_rows)
+                    q_lo_r, q_hi_r = np.nanquantile(gsum_interp_mat, [0.025, 0.975], axis=0)
+                    g_min_r = np.nanmin(gsum_interp_mat, axis=0)
+                    g_max_r = np.nanmax(gsum_interp_mat, axis=0)
+                    v_ratio = (
+                        np.isfinite(psi_grid) & np.isfinite(q_lo_r) & np.isfinite(q_hi_r)
+                        & np.isfinite(g_min_r) & np.isfinite(g_max_r)
+                        & (q_hi_r >= q_lo_r) & (g_max_r >= g_min_r) & (q_lo_r >= 0.0)
+                    )
+                    if np.any(v_ratio):
+                        band95_ratio = {
+                            'x': psi_grid[v_ratio],
+                            'y_low': q_lo_r[v_ratio],
+                            'y_high': q_hi_r[v_ratio],
+                            'y_min': g_min_r[v_ratio],
+                            'y_max': g_max_r[v_ratio],
+                            'n_curves': int(len(gsum_interp_rows)),
+                            'chi2_reference': float(chi2_ref),
+                            'delta_chi2': float(delta_95),
+                            'definition': 'profile_1param_selected_ref',
+                            'quantiles': (0.025, 0.975),
+                        }
+
+    # Single robust result: derive geo_fit directly from plateau/grid selection.
+    row_sel = None
+    if plateau_fit['rows']:
+        if np.isfinite(plateau_fit.get('p_selected', np.nan)):
+            row_sel = next(
+                (r for r in plateau_fit['rows'] if np.isclose(float(r['p']), float(plateau_fit['p_selected']), atol=1e-12)),
+                None
+            )
+        if row_sel is None:
+            row_sel = min(
+                plateau_fit['rows'],
+                key=lambda r: float(r['red_chi2']) if np.isfinite(float(r['red_chi2'])) else np.inf
+            )
+    if row_sel is not None:
+        p_geo = float(row_sel['p'])
+        g3_geo = float(row_sel['giiic'])
+        st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200), n_params=2)
+        geo_fit.update({
+            'n': p_geo,
+            'm': p_geo,
+            'giiic': g3_geo,
+            'chi2': float(st['chi2']),
+            'red_chi2': float(st['red_chi2']),
+            'rmse_orth': float(st['rmse_orth']),
+            'quality': _quality(float(st['red_chi2'])),
+            'method': 'plateau-selected scan (n=m, free GIIIc)',
+        })
 
     if np.isfinite(geo_fit['n']) and geo_fit['n'] > 0 and np.isfinite(geo_fit['m']) and geo_fit['m'] > 0 and np.isfinite(geo_fit['giiic']) and geo_fit['giiic'] > 0:
         x_geo = np.linspace(eps, max(float(gic_ref), eps), n_samples)
@@ -3245,6 +3464,10 @@ def optimize_mode_I_III_interaction(
         'N_PST': int(np.sum(pst_mask)),
         'N_nonPST': int(np.sum(non_pst_mask)),
         'max_ratio_iii': float(max_ratio_iii),
+        'ratio_nonpst_min': float(ratio_nonpst_min),
+        'ratio_nonpst_min_unc': float(ratio_nonpst_min_unc),
+        'ratio_nonpst_max': float(ratio_nonpst_max),
+        'ratio_nonpst_max_unc': float(ratio_nonpst_max_unc),
         'gic_ref': float(gic_ref),
         'gic_ref_unc': float(gic_ref_unc),
         'n_gic_ref': int(n_gic_ref),
@@ -3254,6 +3477,11 @@ def optimize_mode_I_III_interaction(
         'forced_fits': forced_fits,
         'geo_fit': geo_fit,
         'plateau_fit': plateau_fit,
+        'band95': band95,
+        'band95_ratio': band95_ratio,
+        'p_ci68': p_ci68,
+        'p_ci95': p_ci95,
+        'p_unc68': float(p_unc68),
         'settings': {
             'auto_plateau_exponent': bool(auto_plateau_exponent),
             'use_plateau_cap_for_geo': bool(use_plateau_cap_for_geo),
@@ -3263,6 +3491,8 @@ def optimize_mode_I_III_interaction(
             'plateau_rel_tol': float(plateau_rel_tol),
             'plateau_abs_tol': float(plateau_abs_tol),
             'plateau_consecutive': int(plateau_consecutive),
+            'plateau_window_steps': int(plateau_window_steps),
+            'plateau_min_span': float(plateau_min_span),
         },
     }
 
@@ -3278,11 +3508,14 @@ def optimize_mode_I_III_interaction(
         print(f"  GIc reference      : {result['gic_ref']:.4f} +/- {result['gic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_gic_ref']})")
         print(f"  GIIIc reference    : {result['giiic_ref']:.4f} +/- {result['giiic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_giiic_ref']})")
         print(f"  max GIII/(GI+GIII) : {result['max_ratio_iii']:.4f}")
+        print(
+            f"  non-PST ratio range: min={result['ratio_nonpst_min']:.4f} +/- {result['ratio_nonpst_min_unc']:.4f}, "
+            f"max={result['ratio_nonpst_max']:.4f} +/- {result['ratio_nonpst_max_unc']:.4f}"
+        )
         print("-" * 72)
         gf = result['geo_fit']
         print("  geometric best fit (n=m, free GIIIc)")
         print(f"    method            : {gf['method']}")
-        print(f"    starts total/succ : {gf['starts_total']} / {gf['starts_success']}")
         print(f"    n                 : {gf['n']:.4f}")
         print(f"    m                 : {gf['m']:.4f}")
         print(f"    GIIIc             : {gf['giiic']:.4f} J/m^2 (free)")
@@ -3293,12 +3526,24 @@ def optimize_mode_I_III_interaction(
             print("-" * 72)
             print("  plateau scan (n=m, weighted nearest-arc chi^2)")
             print(f"    scan range         : p={s['plateau_p_min']:.2f}..{s['plateau_p_max']:.2f} (step={s['plateau_cap_step']:.2f})")
-            print(f"    plateau criteria   : d_abs<={s['plateau_abs_tol']:.4g}, d_rel<={s['plateau_rel_tol']:.4g}, consecutive={s['plateau_consecutive']}")
+            print(
+                f"    plateau criteria   : d_abs<={s['plateau_abs_tol']:.4g}, d_rel<={s['plateau_rel_tol']:.4g}, "
+                f"window_steps={s['plateau_window_steps']}, min_span={s['plateau_min_span']:.2f}, "
+                f"consecutive={s['plateau_consecutive']}"
+            )
             if np.isfinite(pf['p_plateau_start']):
                 print(f"    plateau starts at  : p={pf['p_plateau_start']:.2f}")
             else:
                 print("    plateau starts at  : not detected (used minimum chi^2)")
             print(f"    selected exponent  : p={pf['p_selected']:.2f}")
+            if np.isfinite(result.get('p_unc68', np.nan)):
+                print(f"    p uncertainty (68% profile) : p = {pf['p_selected']:.2f} +/- {result['p_unc68']:.2f}")
+            if np.all(np.isfinite(np.array(result.get('p_ci68', (np.nan, np.nan)), dtype=float))):
+                print(f"    p 68% CI (Delta chi^2=1)    : [{result['p_ci68'][0]:.2f}, {result['p_ci68'][1]:.2f}]")
+            if np.all(np.isfinite(np.array(result.get('p_ci95', (np.nan, np.nan)), dtype=float))):
+                print(f"    p 95% CI (Delta chi^2=3.84) : [{result['p_ci95'][0]:.2f}, {result['p_ci95'][1]:.2f}]")
+            if int(result.get('band95', {}).get('n_curves', 0)) > 0:
+                print(f"    95% band curves used         : n={int(result['band95']['n_curves'])}")
             print(f"    selected GIIIc     : {pf['giiic_selected']:.4f} J/m^2")
             print(f"    chi^2={pf['chi2_selected']:.4g}, reduced chi^2={pf['red_chi2_selected']:.4g}, RMSE_orth={pf['rmse_selected']:.4g}")
         print("=" * 72)
