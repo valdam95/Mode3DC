@@ -2960,3 +2960,349 @@ def opt_GI_GII_ODR(
     if print_results:
         results(fit)
     return fit
+
+
+def optimize_mode_I_III_interaction(
+    df_or_path,
+    auto_plateau_exponent=True,
+    use_plateau_cap_for_geo=True,
+    plateau_p_min=1,
+    plateau_p_max=30,
+    plateau_cap_step=0.1,
+    plateau_rel_tol=0.002,
+    plateau_abs_tol=0.1,
+    plateau_consecutive=5,
+    fit_resolution=1000,
+    print_results=True,
+):
+    """Optimize Mode I/III interaction and return all values/stats as dict."""
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            if print_results:
+                print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            if print_results:
+                print(f"Error loading parquet: {e}")
+            return None
+
+    for col in ['G1c', 'G3c']:
+        if col not in df.columns:
+            if print_results:
+                print(f"Error: Missing required columns: {col}")
+            return None
+
+    work = pd.DataFrame(index=df.index)
+    work['G1c'] = pd.to_numeric(df['G1c'], errors='coerce')
+    work['G3c'] = pd.to_numeric(df['G3c'], errors='coerce')
+    work['G1c_unc'] = pd.to_numeric(df['G1c_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0) if 'G1c_uncertainty' in df.columns else 0.0
+    work['G3c_unc'] = pd.to_numeric(df['G3c_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0) if 'G3c_uncertainty' in df.columns else 0.0
+    if 'AFN_num' in df.columns:
+        work['AFN_num'] = pd.to_numeric(df['AFN_num'], errors='coerce')
+    elif 'AFN' in df.columns:
+        work['AFN_num'] = pd.to_numeric(df['AFN'], errors='coerce')
+    else:
+        work['AFN_num'] = np.nan
+    work = work.dropna(subset=['G1c', 'G3c'])
+    if work.empty:
+        if print_results:
+            print("No valid rows for optimization.")
+        return None
+
+    eps = 1e-12
+    gi = np.clip(work['G1c'].to_numpy(dtype=float), eps, None)
+    giii = np.clip(work['G3c'].to_numpy(dtype=float), eps, None)
+    sx = np.clip(work['G1c_unc'].to_numpy(dtype=float), 1e-9, None)
+    sy = np.clip(work['G3c_unc'].to_numpy(dtype=float), 1e-9, None)
+    afn = work['AFN_num'].to_numpy(dtype=float)
+
+    afn_round = np.rint(afn)
+    pst_mask = np.isfinite(afn_round) & np.isin(afn_round.astype(int), np.arange(1, 8))
+    non_pst_mask = ~pst_mask
+    gi_seed = gi[pst_mask] if np.any(pst_mask) else gi
+    giii_seed = giii[non_pst_mask] if np.any(non_pst_mask) else giii
+
+    def _mean_sem(vals):
+        vals = np.asarray(vals, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return np.nan, np.nan, 0
+        mu = float(np.mean(vals))
+        sem = float(np.std(vals, ddof=1) / np.sqrt(vals.size)) if vals.size > 1 else 0.0
+        return mu, sem, int(vals.size)
+
+    gic_ref, gic_ref_unc, n_gic_ref = _mean_sem(gi_seed)
+    giiic_ref, giiic_ref_unc, n_giiic_ref = _mean_sem(giii_seed)
+    if not np.isfinite(gic_ref) or gic_ref <= 0:
+        gic_ref = float(np.nanmedian(gi))
+    if not np.isfinite(giiic_ref) or giiic_ref <= 0:
+        giiic_ref = float(np.nanmedian(giii))
+    g13 = gi + giii
+    max_ratio_iii = float(np.nanmax(np.divide(giii, np.maximum(g13, eps)))) if g13.size else np.nan
+    n_samples = max(int(fit_resolution), 50)
+
+    def _quality(red):
+        if not np.isfinite(red):
+            return "unknown"
+        if red < 0.5:
+            return "possibly overestimated uncertainties"
+        if red <= 2.0:
+            return "good"
+        if red <= 5.0:
+            return "acceptable"
+        return "poor"
+
+    def _orth_stats(n_eval, m_eval, gic_eval, giiic_eval, curve_samples):
+        n_eval = max(float(n_eval), 1e-9)
+        m_eval = max(float(m_eval), 1e-9)
+        gic_eval = max(float(gic_eval), eps)
+        giiic_eval = max(float(giiic_eval), eps)
+        implicit = (gi / gic_eval) ** n_eval + (giii / giiic_eval) ** m_eval - 1.0
+        t = np.linspace(0.0, 1.0, max(int(curve_samples), 200))
+        t_dense = np.unique(np.concatenate([t, t ** 2, 1.0 - (1.0 - t) ** 2]))
+        x_curve = np.clip(gic_eval * t_dense, 0.0, gic_eval)
+        with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+            term = 1.0 - (x_curve / gic_eval) ** n_eval
+            y_curve = np.full_like(x_curve, np.nan, dtype=float)
+            msk = term >= 0.0
+            y_curve[msk] = giiic_eval * np.power(term[msk], 1.0 / m_eval)
+        mskc = np.isfinite(x_curve) & np.isfinite(y_curve)
+        x_curve = x_curve[mskc]
+        y_curve = y_curve[mskc]
+        if x_curve.size < 2:
+            x_curve = np.array([0.0, gic_eval], dtype=float)
+            y_curve = np.array([giiic_eval, 0.0], dtype=float)
+
+        dx = gi[:, None] - x_curve[None, :]
+        dy = giii[:, None] - y_curve[None, :]
+        d2 = dx ** 2 + dy ** 2
+        idx = np.argmin(d2, axis=1)
+        orth_abs = np.sqrt(np.maximum(d2[np.arange(gi.size), idx], 0.0))
+        orth = np.sign(implicit) * orth_abs
+        gi_p = np.clip(x_curve[idx], eps, None)
+        giii_p = np.clip(y_curve[idx], eps, None)
+        dfx = n_eval * np.power(gi_p / gic_eval, n_eval - 1.0) / gic_eval
+        dfy = m_eval * np.power(giii_p / giiic_eval, m_eval - 1.0) / giiic_eval
+        gnorm = np.sqrt(dfx ** 2 + dfy ** 2)
+        gnorm = np.clip(np.nan_to_num(gnorm, nan=1e-12, posinf=1e12, neginf=1e-12), 1e-12, None)
+        sorth = np.sqrt((dfx * sx) ** 2 + (dfy * sy) ** 2) / gnorm
+        sorth = np.clip(np.nan_to_num(sorth, nan=1e-9, posinf=1e9, neginf=1e-9), 1e-9, None)
+        chi2 = float(np.sum((orth / sorth) ** 2))
+        dof = max(int(gi.size) - 2, 1)
+        return {
+            'chi2': chi2,
+            'red_chi2': float(chi2 / dof),
+            'rmse_orth': float(np.sqrt(np.mean(orth ** 2))),
+            'x_curve': x_curve,
+            'y_curve': y_curve,
+        }
+
+    forced_fits = []
+
+    geo_fit = {'n': np.nan, 'm': np.nan, 'giiic': np.nan, 'chi2': np.nan, 'red_chi2': np.nan, 'rmse_orth': np.nan,
+               'quality': 'unknown', 'method': 'not-run', 'starts_total': 0, 'starts_success': 0, 'x_curve': np.array([]), 'y_curve': np.array([])}
+    plateau_fit = {'enabled': bool(auto_plateau_exponent), 'p_selected': np.nan, 'p_plateau_start': np.nan,
+                   'giiic_selected': np.nan, 'chi2_selected': np.nan, 'red_chi2_selected': np.nan, 'rmse_selected': np.nan, 'rows': []}
+
+    # Plateau scan with step control.
+    if bool(auto_plateau_exponent):
+        p_lo = max(float(plateau_p_min), 1.0)
+        p_hi = max(float(plateau_p_max), p_lo)
+        p_step = max(float(plateau_cap_step), 1e-6)
+        p_vals = np.arange(p_lo, p_hi + 0.5 * p_step, p_step, dtype=float)
+        giiic_upper = float(max(3.0 * giiic_ref, 1.5 * np.nanmax(giii), eps))
+        try:
+            from scipy.optimize import minimize_scalar
+            has_scalar = True
+        except Exception:
+            has_scalar = False
+        chi2_vals = []
+        for p_scan in p_vals:
+            def _obj_g3(g3):
+                return float(_orth_stats(p_scan, p_scan, gic_ref, float(g3), max(350, int(n_samples // 2)))['chi2'])
+            g3_opt = float(giiic_ref)
+            if has_scalar:
+                try:
+                    r = minimize_scalar(_obj_g3, bounds=(eps, giiic_upper), method='bounded', options={'maxiter': 200})
+                    if r.success and np.isfinite(r.x):
+                        g3_opt = float(r.x)
+                except Exception:
+                    pass
+            st = _orth_stats(p_scan, p_scan, gic_ref, g3_opt, max(n_samples, 1200))
+            chi2_vals.append(float(st['chi2']))
+            plateau_fit['rows'].append({'p': float(p_scan), 'giiic': float(g3_opt), 'chi2': float(st['chi2']),
+                                        'red_chi2': float(st['red_chi2']), 'rmse': float(st['rmse_orth'])})
+        if len(chi2_vals) >= 2:
+            d_abs = [chi2_vals[i - 1] - chi2_vals[i] for i in range(1, len(chi2_vals))]
+            d_rel = [(d_abs[i] / max(abs(chi2_vals[i]), 1e-12)) for i in range(len(d_abs))]
+            flags = [(d_abs[i] <= float(plateau_abs_tol)) and (d_rel[i] <= float(plateau_rel_tol)) for i in range(len(d_abs))]
+            run, idx = 0, None
+            k = max(int(plateau_consecutive), 1)
+            for i, f in enumerate(flags):
+                run = run + 1 if f else 0
+                if run >= k:
+                    idx = i - k + 2
+                    break
+            if idx is not None:
+                p_start = float(p_vals[idx])
+                p_sel = float(max(p_start - p_step, p_lo))
+            else:
+                p_start = np.nan
+                p_sel = float(p_vals[int(np.argmin(chi2_vals))])
+            row_sel = next((r for r in plateau_fit['rows'] if np.isclose(float(r['p']), float(p_sel), atol=1e-12)), None)
+            if row_sel is not None:
+                plateau_fit.update({
+                    'p_selected': float(p_sel),
+                    'p_plateau_start': float(p_start) if np.isfinite(p_start) else np.nan,
+                    'giiic_selected': float(row_sel['giiic']),
+                    'chi2_selected': float(row_sel['chi2']),
+                    'red_chi2_selected': float(row_sel['red_chi2']),
+                    'rmse_selected': float(row_sel['rmse']),
+                })
+
+    # Free red-fit with n=m=p and free GIIIc.
+    try:
+        from scipy.optimize import minimize
+        seed_axis = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 20.0, 35.0, 50.0], dtype=float)
+        giii_scales = np.array([0.6, 0.8, 1.0, 1.2, 1.5], dtype=float)
+        seeds = [(float(a), float(max(giiic_ref * s, eps))) for a in seed_axis for s in giii_scales]
+        giiic_upper = float(max(3.0 * giiic_ref, 1.5 * np.nanmax(giii), eps))
+
+        def _obj_geo(x):
+            p_try, g3_try = float(x[0]), float(x[1])
+            if p_try <= 0.05 or g3_try <= eps or (not np.isfinite(p_try + g3_try)):
+                return 1e18
+            return float(_orth_stats(p_try, p_try, gic_ref, g3_try, max(350, int(n_samples // 2)))['chi2'])
+
+        runs = []
+        for p0, g0 in seeds:
+            geo_fit['starts_total'] += 1
+            try:
+                r = minimize(_obj_geo, x0=np.array([p0, g0]), method='L-BFGS-B', bounds=[(0.05, 50.0), (eps, giiic_upper)])
+                if r.success and np.all(np.isfinite(r.x)) and np.isfinite(r.fun):
+                    geo_fit['starts_success'] += 1
+                    runs.append((float(r.fun), float(r.x[0]), float(r.x[1])))
+            except Exception:
+                continue
+        if runs:
+            runs.sort(key=lambda t: t[0])
+            _, p_geo, g3_geo = runs[0]
+            st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200))
+            geo_fit.update({'n': p_geo, 'm': p_geo, 'giiic': g3_geo, 'chi2': st['chi2'], 'red_chi2': st['red_chi2'],
+                            'rmse_orth': st['rmse_orth'], 'quality': _quality(st['red_chi2']),
+                            'method': 'multistart nearest-arc orthogonal (n=m, free GIIIc; L-BFGS-B)'})
+
+        if bool(use_plateau_cap_for_geo):
+            p_lo = max(float(plateau_p_min), 1.0)
+            p_hi = max(float(plateau_p_max), p_lo)
+            p_step = max(float(plateau_cap_step), 1e-6)
+            nm_caps = np.arange(p_lo, p_hi + 0.5 * p_step, p_step, dtype=float)
+            best_overall, prev, run, used_cap = None, None, 0, np.nan
+            for cap in nm_caps:
+                seed_p = min(max(float(geo_fit['n']) if np.isfinite(geo_fit['n']) else 2.0, 0.05), cap)
+                seed_g = min(max(float(geo_fit['giiic']) if np.isfinite(geo_fit['giiic']) else giiic_ref, eps), giiic_upper)
+                try:
+                    r = minimize(_obj_geo, x0=np.array([seed_p, seed_g]), method='L-BFGS-B',
+                                 bounds=[(0.05, cap), (eps, giiic_upper)])
+                    if not (r.success and np.all(np.isfinite(r.x)) and np.isfinite(r.fun)):
+                        continue
+                except Exception:
+                    continue
+                best_cap = (float(r.fun), float(r.x[0]), float(r.x[1]))
+                best_overall, used_cap = best_cap, float(cap)
+                if prev is not None:
+                    d_abs = float(prev - best_cap[0])
+                    d_rel = float(d_abs / max(abs(prev), 1e-12))
+                    run = run + 1 if ((d_abs <= float(plateau_abs_tol)) and (d_rel <= float(plateau_rel_tol))) else 0
+                    if run >= max(int(plateau_consecutive), 1):
+                        break
+                prev = float(best_cap[0])
+            if best_overall is not None:
+                _, p_geo, g3_geo = best_overall
+                st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200))
+                geo_fit.update({'n': p_geo, 'm': p_geo, 'giiic': g3_geo, 'chi2': st['chi2'], 'red_chi2': st['red_chi2'],
+                                'rmse_orth': st['rmse_orth'], 'quality': _quality(st['red_chi2']),
+                                'method': f"multistart nearest-arc orthogonal (n=m, free GIIIc; adaptive-plateau-stop at cap={used_cap:.2f})"})
+    except Exception:
+        pass
+
+    if np.isfinite(geo_fit['n']) and geo_fit['n'] > 0 and np.isfinite(geo_fit['m']) and geo_fit['m'] > 0 and np.isfinite(geo_fit['giiic']) and geo_fit['giiic'] > 0:
+        x_geo = np.linspace(eps, max(float(gic_ref), eps), n_samples)
+        with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+            term = 1.0 - (x_geo / max(float(gic_ref), eps)) ** float(geo_fit['n'])
+            y_geo = np.full_like(x_geo, np.nan, dtype=float)
+            vm = term >= 0.0
+            y_geo[vm] = float(geo_fit['giiic']) * (term[vm] ** (1.0 / max(float(geo_fit['m']), eps)))
+        vm = np.isfinite(x_geo) & np.isfinite(y_geo) & (y_geo >= 0.0)
+        geo_fit['x_curve'] = x_geo[vm]
+        geo_fit['y_curve'] = y_geo[vm]
+
+    result = {
+        'N': int(gi.size),
+        'N_fit': int(gi.size),
+        'N_PST': int(np.sum(pst_mask)),
+        'N_nonPST': int(np.sum(non_pst_mask)),
+        'max_ratio_iii': float(max_ratio_iii),
+        'gic_ref': float(gic_ref),
+        'gic_ref_unc': float(gic_ref_unc),
+        'n_gic_ref': int(n_gic_ref),
+        'giiic_ref': float(giiic_ref),
+        'giiic_ref_unc': float(giiic_ref_unc),
+        'n_giiic_ref': int(n_giiic_ref),
+        'forced_fits': forced_fits,
+        'geo_fit': geo_fit,
+        'plateau_fit': plateau_fit,
+        'settings': {
+            'auto_plateau_exponent': bool(auto_plateau_exponent),
+            'use_plateau_cap_for_geo': bool(use_plateau_cap_for_geo),
+            'plateau_p_min': float(plateau_p_min),
+            'plateau_p_max': float(plateau_p_max),
+            'plateau_cap_step': float(plateau_cap_step),
+            'plateau_rel_tol': float(plateau_rel_tol),
+            'plateau_abs_tol': float(plateau_abs_tol),
+            'plateau_consecutive': int(plateau_consecutive),
+        },
+    }
+
+    if print_results:
+        print("")
+        print("=" * 72)
+        print("optimize_mode_I_III_interaction - report")
+        print("-" * 72)
+        print(f"  data points        : N={result['N']}")
+        print(f"  optimization points: N_fit={result['N_fit']} (PST included)")
+        print("  AFN split          : PST=AFN 1..7 for GIc, non-PST for GIIIc")
+        print(f"  subset counts      : N_PST={result['N_PST']}, N_nonPST={result['N_nonPST']}")
+        print(f"  GIc reference      : {result['gic_ref']:.4f} +/- {result['gic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_gic_ref']})")
+        print(f"  GIIIc reference    : {result['giiic_ref']:.4f} +/- {result['giiic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_giiic_ref']})")
+        print(f"  max GIII/(GI+GIII) : {result['max_ratio_iii']:.4f}")
+        print("-" * 72)
+        gf = result['geo_fit']
+        print("  geometric best fit (n=m, free GIIIc)")
+        print(f"    method            : {gf['method']}")
+        print(f"    starts total/succ : {gf['starts_total']} / {gf['starts_success']}")
+        print(f"    n                 : {gf['n']:.4f}")
+        print(f"    m                 : {gf['m']:.4f}")
+        print(f"    GIIIc             : {gf['giiic']:.4f} J/m^2 (free)")
+        print(f"    chi^2={gf['chi2']:.4g}, reduced chi^2={gf['red_chi2']:.4g}, RMSE_orth={gf['rmse_orth']:.4g}, quality={gf['quality']}")
+        if result['plateau_fit']['enabled']:
+            pf = result['plateau_fit']
+            s = result['settings']
+            print("-" * 72)
+            print("  plateau scan (n=m, weighted nearest-arc chi^2)")
+            print(f"    scan range         : p={s['plateau_p_min']:.2f}..{s['plateau_p_max']:.2f} (step={s['plateau_cap_step']:.2f})")
+            print(f"    plateau criteria   : d_abs<={s['plateau_abs_tol']:.4g}, d_rel<={s['plateau_rel_tol']:.4g}, consecutive={s['plateau_consecutive']}")
+            if np.isfinite(pf['p_plateau_start']):
+                print(f"    plateau starts at  : p={pf['p_plateau_start']:.2f}")
+            else:
+                print("    plateau starts at  : not detected (used minimum chi^2)")
+            print(f"    selected exponent  : p={pf['p_selected']:.2f}")
+            print(f"    selected GIIIc     : {pf['giiic_selected']:.4f} J/m^2")
+            print(f"    chi^2={pf['chi2_selected']:.4g}, reduced chi^2={pf['red_chi2_selected']:.4g}, RMSE_orth={pf['rmse_selected']:.4g}")
+        print("=" * 72)
+        print("")
+
+    return result
+

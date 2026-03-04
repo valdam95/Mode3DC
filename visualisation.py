@@ -1147,8 +1147,10 @@ def plot_mode_I_III_interaction(
     title=None,
     figsize=(8, 7.5),
     dpi=100,
-    Gc_lim=0.9,
+    opt_param=None,
     fit_resolution=1000,
+    show_plot=True,
+    return_optimization=False,
 ):
     """
     Quick scatter plot for G-components with uncertainty whiskers (no end caps).
@@ -1190,13 +1192,16 @@ def plot_mode_I_III_interaction(
         Figure size.
     dpi : int, default 120
         Figure DPI.
-    Gc_lim : float, default 0.9
-        Threshold to estimate reference critical values from data:
-        - GIc_ref from rows with G1c/(G1c+G3c) >= Gc_lim
-        - GIIIc_ref from rows with G3c/(G1c+G3c) >= Gc_lim
-        If a subset is empty, all points are used as fallback.
+    opt_param : dict, optional
+        Precomputed optimization results (e.g. from
+        data_config.optimize_mode_I_III_interaction). If provided and plotting
+        G1 vs G3, overlays the red geometric fit curve from this dict.
     fit_resolution : int, default 1000
         Number of x-samples for plotting fitted interaction curves.
+    show_plot : bool, default True
+        If False, skip rendering the figure (useful for optimization-only calls).
+    return_optimization : bool, default False
+        If True, return optimization values/stats as a dictionary.
     """
     component_map = {
         'G1': 'G1c',
@@ -1241,6 +1246,11 @@ def plot_mode_I_III_interaction(
             # If duplicate column names exist, use the first occurrence.
             raw_col = raw_col.iloc[:, 0]
         plot_df[col] = pd.to_numeric(raw_col, errors='coerce')
+    if 'AFN' in df.columns:
+        raw_afn_col = df['AFN']
+        if isinstance(raw_afn_col, pd.DataFrame):
+            raw_afn_col = raw_afn_col.iloc[:, 0]
+        plot_df['AFN_num'] = pd.to_numeric(raw_afn_col, errors='coerce')
     if depict_AFN and 'AFN' in df.columns:
         raw_afn_col = df['AFN']
         if isinstance(raw_afn_col, pd.DataFrame):
@@ -1362,196 +1372,39 @@ def plot_mode_I_III_interaction(
         color='black',
     )
 
-    # Overlay three forced-exponent interaction curves for G1/G3 space:
-    # (Gi/GIc)^n + (Giii/GIIIc)^m = 1 with n=m in {1,2,5}.
-    # Reference GIc/GIIIc are estimated first from Gc_lim subsets, then used
-    # as ODR start values (and deterministic fallback if ODR does not converge).
+    optimization_result = None
     if x_col == 'G1c' and y_col == 'G3c':
-        try:
-            from scipy.odr import RealData, Model, ODR
-        except Exception:
-            RealData = Model = ODR = None
-
-        eps = 1e-12
-        gi_raw = np.nan_to_num(x_vals.astype(float), nan=np.nan, posinf=np.nan, neginf=np.nan)
-        giii_raw = np.nan_to_num(y_vals.astype(float), nan=np.nan, posinf=np.nan, neginf=np.nan)
-        sx_raw = np.nan_to_num(x_err_vals.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
-        sy_raw = np.nan_to_num(y_err_vals.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
-        valid_mask = np.isfinite(gi_raw) & np.isfinite(giii_raw)
-        gi = np.clip(gi_raw[valid_mask], eps, None)
-        giii = np.clip(giii_raw[valid_mask], eps, None)
-        sx = np.clip(sx_raw[valid_mask], 1e-9, None)
-        sy = np.clip(sy_raw[valid_mask], 1e-9, None)
-        if gi.size == 0:
-            print("[plot_mode_I_III_interaction] No finite G1/G3 points for interaction overlays.")
-        else:
-            g13 = gi + giii
-            ratio_i = np.divide(gi, np.maximum(g13, eps))
-            ratio_iii = np.divide(giii, np.maximum(g13, eps))
-            mask_i = ratio_i >= float(Gc_lim)
-            mask_iii = ratio_iii >= float(Gc_lim)
-
-            def _weighted_mean_with_unc(values, stds):
-                v = np.asarray(values, dtype=float)
-                s = np.asarray(stds, dtype=float)
-                m = np.isfinite(v) & np.isfinite(s) & (s >= 0.0)
-                if not np.any(m):
-                    return np.nan, np.nan
-                v = v[m]
-                s = np.clip(s[m], 1e-6, None)
-                w = 1.0 / (s ** 2)
-                w_sum = np.maximum(np.sum(w), 1e-12)
-                mu = float(np.sum(w * v) / w_sum)
-                mu_unc = float(np.sqrt(1.0 / w_sum))
-                return mu, mu_unc
-
-            gi_seed_vals = gi[mask_i] if np.any(mask_i) else gi
-            sg1_seed_vals = sx[mask_i] if np.any(mask_i) else sx
-            giii_seed_vals = giii[mask_iii] if np.any(mask_iii) else giii
-            sg3_seed_vals = sy[mask_iii] if np.any(mask_iii) else sy
-
-            gic_ref, gic_ref_unc = _weighted_mean_with_unc(gi_seed_vals, sg1_seed_vals)
-            giiic_ref, giiic_ref_unc = _weighted_mean_with_unc(giii_seed_vals, sg3_seed_vals)
-            if not np.isfinite(gic_ref) or gic_ref <= 0:
-                gic_ref = float(np.nanmedian(gi))
-            if not np.isfinite(giiic_ref) or giiic_ref <= 0:
-                giiic_ref = float(np.nanmedian(giii))
-            if not np.isfinite(gic_ref_unc):
-                gic_ref_unc = 0.0
-            if not np.isfinite(giiic_ref_unc):
-                giiic_ref_unc = 0.0
-
+        if isinstance(opt_param, dict):
+            optimization_result = opt_param
             n_samples = max(int(fit_resolution), 50)
-            exp_styles = [(1.0, '-'), (2.0, '--'), (5.0, ':')]
-            fit_rows = []
 
-            def _quality_from_reduced_chi2(red_chi2):
-                if not np.isfinite(red_chi2):
-                    return "unknown"
-                if red_chi2 < 0.5:
-                    return "possibly overestimated uncertainties"
-                if red_chi2 <= 2.0:
-                    return "good"
-                if red_chi2 <= 5.0:
-                    return "acceptable"
-                return "poor"
-
-            for p, ls in exp_styles:
-                def _implicit(beta, x):
-                    gic = max(float(beta[0]), eps)
-                    giiic = max(float(beta[1]), eps)
-                    gi_loc, giii_loc = x
-                    gi_loc = np.clip(np.asarray(gi_loc, dtype=float), eps, None)
-                    giii_loc = np.clip(np.asarray(giii_loc, dtype=float), eps, None)
-                    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-                        return (gi_loc / gic) ** p + (giii_loc / giiic) ** p - 1.0
-
-                gic_fit = float(gic_ref)
-                giiic_fit = float(giiic_ref)
-                fit_source = 'Gc_lim reference'
-                res_var = np.nan
-
-                if RealData is not None:
-                    data = RealData(
-                        x=np.row_stack([gi, giii]),
-                        y=np.ones_like(gi),
-                        sx=np.row_stack([sx, sy]),
-                    )
-                    model = Model(_implicit, implicit=True)
-                    seeds = [
-                        (gic_ref, giiic_ref),
-                        (np.nanmedian(gi), np.nanmedian(giii)),
-                        (1.25 * gic_ref, 1.25 * giiic_ref),
-                        (0.75 * gic_ref, 0.75 * giiic_ref),
-                    ]
-                    runs = []
-                    for s_gic, s_giiic in seeds:
-                        try:
-                            odr = ODR(
-                                data,
-                                model,
-                                beta0=np.array([max(float(s_gic), eps), max(float(s_giiic), eps)], dtype=float),
-                                ifixb=[0, 0],
-                            )
-                            odr.set_job(fit_type=1, deriv=0)
-                            out = odr.run()
-                            if np.isfinite(getattr(out, 'sum_square', np.nan)):
-                                runs.append(out)
-                        except Exception:
-                            continue
-                    if runs:
-                        best = runs[int(np.argmin([float(r.sum_square) for r in runs]))]
-                        gic_fit = max(float(best.beta[0]), eps)
-                        giiic_fit = max(float(best.beta[1]), eps)
-                        res_var = float(getattr(best, 'res_var', np.nan))
-                        fit_source = f'ODR ({len(runs)}/{len(seeds)} starts)'
-
-                implicit_res = (gi / max(gic_fit, eps)) ** p + (giii / max(giiic_fit, eps)) ** p - 1.0
-                dres_dgi = p * np.power(gi / max(gic_fit, eps), p - 1.0) / max(gic_fit, eps)
-                dres_dgiii = p * np.power(giii / max(giiic_fit, eps), p - 1.0) / max(giiic_fit, eps)
-                sigma_res = np.sqrt((dres_dgi * sx) ** 2 + (dres_dgiii * sy) ** 2)
-                sigma_res = np.clip(np.nan_to_num(sigma_res, nan=1e-9, posinf=1e9, neginf=1e-9), 1e-9, None)
-                chi2 = float(np.sum((implicit_res / sigma_res) ** 2))
-                dof = max(int(gi.size) - 2, 1)
-                red_chi2 = float(chi2 / dof)
-                rmse_implicit = float(np.sqrt(np.mean(implicit_res ** 2)))
-                quality = _quality_from_reduced_chi2(red_chi2)
-
-                fit_rows.append({
-                    'p': float(p),
-                    'gic_fit': gic_fit,
-                    'giiic_fit': giiic_fit,
-                    'res_var': res_var,
-                    'chi2': chi2,
-                    'red_chi2': red_chi2,
-                    'rmse_implicit': rmse_implicit,
-                    'quality': quality,
-                    'source': fit_source,
-                    'linestyle': ls,
-                })
-
-                x_line = np.linspace(eps, gic_fit, n_samples)
+            geo = optimization_result.get('geo_fit', {})
+            n_geo = float(geo.get('n', np.nan))
+            m_geo = float(geo.get('m', np.nan))
+            giiic_geo = float(geo.get('giiic', np.nan))
+            gic_ref = float(optimization_result.get('gic_ref', np.nan))
+            if np.isfinite(n_geo) and n_geo > 0 and np.isfinite(m_geo) and m_geo > 0 and np.isfinite(giiic_geo) and giiic_geo > 0 and np.isfinite(gic_ref) and gic_ref > 0:
+                x_geo = np.linspace(1e-12, gic_ref, n_samples)
                 with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
-                    term = 1.0 - (x_line / gic_fit) ** p
-                    y_line = np.full_like(x_line, np.nan, dtype=float)
-                    valid = term >= 0.0
-                    y_line[valid] = giiic_fit * (term[valid] ** (1.0 / p))
-                valid_curve = np.isfinite(x_line) & np.isfinite(y_line) & (y_line >= 0.0)
-                if np.any(valid_curve):
+                    term_geo = 1.0 - (x_geo / gic_ref) ** n_geo
+                    y_geo = np.full_like(x_geo, np.nan, dtype=float)
+                    msk = term_geo >= 0.0
+                    y_geo[msk] = giiic_geo * (term_geo[msk] ** (1.0 / max(m_geo, 1e-12)))
+                vgeo = np.isfinite(x_geo) & np.isfinite(y_geo) & (y_geo >= 0.0)
+                if np.any(vgeo):
                     ax.plot(
-                        x_line[valid_curve],
-                        y_line[valid_curve],
-                        color=lo.COLORS.get('indigo', '#8319d7'),
-                        linewidth=1.5,
-                        alpha=0.9,
-                        linestyle=ls,
-                        zorder=2,
+                        x_geo[vgeo],
+                        y_geo[vgeo],
+                        color=lo.COLORS.get('red', '#d71149'),
+                        linewidth=2.0,
+                        alpha=0.95,
+                        linestyle='-',
+                        zorder=4,
                     )
-
-            print("")
-            print("=" * 72)
-            print("plot_mode_I_III_interaction - forced n=m diagnostics")
-            print("-" * 72)
-            print(f"  data points        : N={gi.size}")
-            print(f"  Gc threshold       : Gc_lim={float(Gc_lim):.3f}")
-            print(f"  subset counts      : N_GIc={int(np.sum(mask_i))}, N_GIIIc={int(np.sum(mask_iii))}")
-            print(f"  GIc reference      : {gic_ref:.4f} +/- {gic_ref_unc:.4f} J/m^2")
-            print(f"  GIIIc reference    : {giiic_ref:.4f} +/- {giiic_ref_unc:.4f} J/m^2")
-            print("-" * 72)
-            for row in fit_rows:
-                print(f"  n=m={row['p']:.0f} ({row['source']})")
-                print(
-                    f"    GIc={row['gic_fit']:.4f}, GIIIc={row['giiic_fit']:.4f}, "
-                    f"res_var={row['res_var']:.3e}"
-                )
-                print(
-                    f"    chi^2={row['chi2']:.4g}, reduced chi^2={row['red_chi2']:.4g}, "
-                    f"RMSE_implicit={row['rmse_implicit']:.4g}, quality={row['quality']}"
-                )
-            print("=" * 72)
-            print("")
+        else:
+            print("[plot_mode_I_III_interaction] No opt_param provided; plotting scatter only (no fit overlays).")
     else:
-        print("[plot_mode_I_III_interaction] Fixed-exponent fit overlay skipped (requires x_component='G1' and y_component='G3').")
+        print("[plot_mode_I_III_interaction] Fit overlay skipped (requires x_component='G1' and y_component='G3').")
 
     if x_lim is not None:
         ax.set_xlim(x_lim)
@@ -1594,7 +1447,12 @@ def plot_mode_I_III_interaction(
         spine.set_linewidth(frame_thickness)
     ax.grid(False)
     plt.tight_layout()
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+    if return_optimization:
+        return optimization_result
     return None
 
 
@@ -2665,6 +2523,10 @@ def plot_mode_III_ratio_to_GIGIII(
     frame_thickness=1,
     x_lim=None,
     y_lim=None,
+    n=None,
+    m=None,
+    GIIIc=None,
+    fit_curve_samples=1200,
 ):
     """
     Plot Mode III ratio over total mixed-mode energy release rate.
@@ -2673,6 +2535,10 @@ def plot_mode_III_ratio_to_GIGIII(
         psi_III = G_III / (G_I + G_III)
     y-axis:
         G_I + G_III
+
+    Optional red interaction overlay:
+        (G_I/GIc)^n + (G_III/GIIIc)^m = 1
+    with GIc automatically estimated from PST experiments (AFN 1..7).
     """
     if isinstance(df_or_path, pd.DataFrame):
         df = df_or_path.copy()
@@ -2710,6 +2576,27 @@ def plot_mode_III_ratio_to_GIGIII(
     if plot_df.empty:
         print("No valid rows to plot (requires G1c, G3c with G1c+G3c > 0).")
         return None
+
+    # GIc reference from PST subset (AFN 1..7), same rule as in
+    # plot_mode_I_III_interaction; fallback to all rows if PST subset is empty.
+    gic_ref = np.nan
+    gic_ref_sem = np.nan
+    gic_ref_n = 0
+    if 'AFN' in plot_df.columns:
+        afn_num = pd.to_numeric(plot_df['AFN'], errors='coerce')
+        pst_mask = afn_num.round().isin([1, 2, 3, 4, 5, 6, 7])
+        gic_seed = plot_df.loc[pst_mask, 'G1c'] if pst_mask.any() else plot_df['G1c']
+    else:
+        pst_mask = pd.Series(False, index=plot_df.index)
+        gic_seed = plot_df['G1c']
+    gic_seed = pd.to_numeric(gic_seed, errors='coerce').dropna()
+    if not gic_seed.empty:
+        gic_ref = float(gic_seed.mean())
+        gic_ref_n = int(gic_seed.shape[0])
+        if gic_ref_n > 1:
+            gic_ref_sem = float(gic_seed.std(ddof=1) / np.sqrt(gic_ref_n))
+        else:
+            gic_ref_sem = 0.0
 
     # Coordinates.
     plot_df['psi_III'] = plot_df['G3c'] / plot_df['G13_total']
@@ -2791,14 +2678,54 @@ def plot_mode_III_ratio_to_GIGIII(
         zorder=1,
     )
 
+    # Optional red interaction curve from user-provided n, m, GIIIc
+    # with GIc estimated automatically from PST rows.
+    if n is not None and m is not None and GIIIc is not None:
+        try:
+            n_val = float(n)
+            m_val = float(m)
+            giiic_val = float(GIIIc)
+        except Exception:
+            n_val = m_val = giiic_val = np.nan
+        if (
+            np.isfinite(n_val) and np.isfinite(m_val) and np.isfinite(giiic_val)
+            and n_val > 0.0 and m_val > 0.0 and giiic_val > 0.0
+            and np.isfinite(gic_ref) and gic_ref > 0.0
+        ):
+            t = np.linspace(0.0, 1.0, max(int(fit_curve_samples), 200))
+            gi_curve = gic_ref * t
+            with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+                giii_curve = giiic_val * np.power(np.clip(1.0 - np.power(t, n_val), 0.0, None), 1.0 / m_val)
+            gsum_curve = gi_curve + giii_curve
+            psi_curve = np.divide(giii_curve, np.maximum(gsum_curve, 1e-12))
+            valid_curve = np.isfinite(psi_curve) & np.isfinite(gsum_curve)
+            if np.any(valid_curve):
+                # Sort by psi for visually clean plotting in this coordinate system.
+                order = np.argsort(psi_curve[valid_curve])
+                ax.plot(
+                    psi_curve[valid_curve][order],
+                    gsum_curve[valid_curve][order],
+                    color=lo.COLORS.get('red', '#d71149'),
+                    linewidth=2.0,
+                    alpha=0.95,
+                    linestyle='-',
+                    zorder=3,
+                )
+            print("")
+            print("[plot_mode_III_ratio_to_GIGIII] Red interaction overlay")
+            print(f"  GIc (auto, PST AFN 1..7): {gic_ref:.4f} +/- {gic_ref_sem:.4f} J/m^2 (n={gic_ref_n})")
+            print(f"  n={n_val:.4f}, m={m_val:.4f}, GIIIc={giiic_val:.4f} J/m^2")
+        else:
+            print("[plot_mode_III_ratio_to_GIGIII] Red interaction overlay skipped: invalid n/m/GIIIc or GIc reference.")
+
     ax.set_xlabel(
-        r'Mode III ratio $\psi_{\mathrm{III}}=\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
+        r'Mode III ratio $\mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_x,
         color='black',
     )
     ax.set_ylabel(
-        r'Total energy release rate $\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
+        r'Energy release rate $\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_y,
         color='black',
