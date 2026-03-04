@@ -1,12 +1,12 @@
 # ============================================================================
-# Cold Regions Science and Technology – Journal Reference & Author Preferences
+# Journal of the Mechanics and Physics of Solids – Journal Reference & Author Preferences
 # ============================================================================
 #
 # PURPOSE:
 #   Self-contained reference encoding (1) the author's scientific and stylistic
 #   preferences, (2) writing patterns extracted from published papers in the
-#   target journal, and (3) the complete guide-for-authors of Cold Regions
-#   Science and Technology (Elsevier). Designed to be pasted at the beginning
+#   target journal, and (3) the complete guide-for-authors of Journal of the
+#   Mechanics and Physics of Solids (Elsevier). Designed to be pasted at the beginning
 #   of any LLM conversation involving drafting, reviewing, or editing
 #   manuscript content for this journal.
 #
@@ -49,7 +49,7 @@ author_preferences:
     physical_symbols: "Proper math mode: italic for variables ($G$, $\\rho$, $K$), upright for subscript labels ($G_{\\mathrm{Ic}}$, $\\rho_{\\mathrm{sub}}$, $K_{\\mathrm{II}}$)."
     subscript_indices: "Labels (not running indices) must be in \\mathrm{}, e.g. $G_{\\mathrm{IIc}}$, $\\sigma_{\\mathrm{n}}$."
     custom_macros: "Use the author's custom macros consistently for fracture-mode notation."
-    document_class: "Elsevier elsarticle document class conventions for Cold Regions Science and Technology."
+    document_class: "Elsevier elsarticle document class conventions for Journal of the Mechanics and Physics of Solids."
     layout: "Single-column layout for Word; single- or double-column for LaTeX."
     discussion_sections: "Science-forward, concise, strong outcome emphasis. No verbose padding."
     language: "Journal-ready quality — precise, mechanically grounded, no generic phrasing."
@@ -66,6 +66,7 @@ author_preferences:
     - "Correct relative scaling in normalised spaces (e.g. G_I/G_Ic vs G_II/G_IIc)."
     - "Explicit mapping between normalised and absolute spaces when both are shown."
     - "Professional labelling — no casual or ambiguous axis titles."
+    - "In figure captions dont start like 'In (a), the pure mode~\I configuration is obtained...' but fluently integrate like '(a) the pure mode~\I configuration is obtained...' instead"
 
   tables:
     symbols: "Math mode inside tables."
@@ -102,7 +103,7 @@ author_preferences:
     - "Avoid ambiguous density statements; always specify which density is meant."
     - "Science-forward: lead with the physical insight, then support with data/method."
     - "Do NOT use the word 'yielding' — replace with 'giving', 'producing', 'resulting in', or rephrase entirely."
-
+    - "its not 'weak-layer' but 'weak layer'"
   meta_pattern:
     rejects: "Imprecision, stylistic inconsistency, geometry-dependent interpretation, stress-only framing, and journal-noncompliant formatting."
     demands: "Mechanically rigorous, ERR-centred, geometry-robust, journal-ready, mathematically clean presentation."
@@ -113,7 +114,7 @@ author_preferences:
 # ============================================================================
 # Patterns extracted from two completed manuscripts by the same author:
 # - Mixed-mode fracture of porous, bonded snow (Engineering Fracture Mechanics, 2026)
-# - Current mode III draft (Cold Regions Science and Technology)
+# - Current mode III draft (Journal of the Mechanics and Physics of Solids)
 # Any LLM-generated text MUST replicate these patterns to sound like the author.
 
 author_writing_voice:
@@ -320,7 +321,7 @@ current_manuscript:
 
   paper_identity:
     title: "Influence of mode III contribution on the fracture toughness of weak snow layers"
-    target_journal: "Cold Regions Science and Technology (Elsevier)"
+    target_journal: "Journal of the Mechanics and Physics of Solids (Elsevier)"
     document_class: "\\documentclass[final,3p,times]{elsarticle}  # single-column, Times serif"
     bibliography_style: "elsarticle-harv (author-year / Harvard)"
     status: "Early draft — some sections are unproofed AI text (marked red), some are ideas (marked blue), black text is review-ready."
@@ -477,9 +478,8 @@ current_manuscript:
 # ============================================================================
 # JOURNAL WRITING PATTERNS (extracted from published papers)
 # ============================================================================
-# Conventions extracted from three recent Cold Regions Science and Technology
-# papers spanning permafrost engineering, asphalt fracture mechanics, and
-# granular-flow DEM simulation. Use these patterns whenever drafting or
+# Conventions aligned to Journal of the Mechanics and Physics of Solids.
+# Use these patterns whenever drafting or
 # revising manuscript text for this journal.
 
 journal_writing_patterns:
@@ -635,7 +635,7 @@ journal_writing_patterns:
 # ============================================================================
 
 journal_identity:
-  full_name: "Cold Regions Science and Technology"
+  full_name: "Journal of the Mechanics and Physics of Solids"
   publisher: "Elsevier"
   type: "International peer-reviewed journal"
   peer_review: "Single anonymized (minimum two independent reviewers)"
@@ -646,21 +646,37 @@ journal_identity:
 
 scope_and_aims:
   description: |
-    Deals with the science and technical problems of cold environments in both
-    polar regions and more temperate locations. Covers fundamental aspects of
-    cryospheric sciences with applications for cold regions problems, as well
-    as engineering topics related to the cryosphere.
+    The Journal was founded in 1952 by Rodney Hill, who was its Editor-in-Chief
+    until 1968. It continues to enjoy a pre-eminent position in the field of
+    solid mechanics.
+    The Journal aims to publish research of the highest quality and lasting
+    significance on the mechanics of solids. Its scope is broad, ranging from
+    fundamental mechanics concepts to analysing novel phenomena and applications.
+    Solids are interpreted broadly and include natural and synthetic materials
+    and structures. The approach can be theoretical, experimental, or
+    computational. This research activity sits within engineering science and at
+    the nexus between the allied areas of mathematics, material science,
+    chemistry, biology, and physics.
+    The Journal's main purpose is to foster a scientific understanding of all
+    issues impacting the mechanical response of solid materials and their
+    relations to the underlying microstructure and physical mechanisms. Its
+    content reflects the current state of the discipline in analysis,
+    experimental observation, numerical simulation, and data analysis.
+    Authors are encouraged to consider the significance of their contributions
+    to the field of mechanics and the implications of their results, in addition
+    to describing the details of their work.
   core_topics:
-    - "Ice: Physical and mechanical aspects, including glaciers and sea ice"
-    - "Snow: Snow properties, snow avalanches"
-    - "Ice-Water Systems: Interactions between ice and water"
-    - "Frozen Ground: Ice-bonded soils and permafrost"
-    - "Earth Science: Relevant aspects of earth science and materials science"
-    - "Engineering: Offshore and river ice engineering, icing of ships and structures, trafficability"
-    - "Technology: Technological advances for cold regions in research, development, and engineering"
+    - "Fundamental mechanics concepts in solids"
+    - "Novel phenomena and applications in solid mechanics"
+    - "Mechanical response of natural and synthetic materials and structures"
+    - "Microstructure-mechanics-physics relations in solids"
+    - "Theoretical, experimental, and computational mechanics"
+    - "Analysis, experimental observation, numerical simulation, and data analysis"
+    - "Interdisciplinary mechanics at the interface with mathematics, materials science, chemistry, biology, and physics"
   emphasis:
-    - "Applied science is emphasized."
-    - "Theoretical papers must include a detailed discussion of potential application to cold regions problems."
+    - "Highest quality and lasting significance in the mechanics of solids."
+    - "Scientific understanding of mechanisms governing solid-material response."
+    - "Significance and implications of results should be stated, not only procedural details."
 
 editorial_leadership:
   - area: "Sea ice and arctic marine technology"

@@ -1132,7 +1132,7 @@ def plot_column_over_afn(parquet_path, title=None):
 def plot_mode_I_III_interaction(
     df_or_path,
     x_component='G1',
-    y_component='G2',
+    y_component='G3',
     depict_AFN=False,
     mark_infinite=False,
     alpha=0.8,
@@ -1147,6 +1147,8 @@ def plot_mode_I_III_interaction(
     title=None,
     figsize=(8, 7.5),
     dpi=100,
+    Gc_lim=0.9,
+    fit_resolution=1000,
 ):
     """
     Quick scatter plot for G-components with uncertainty whiskers (no end caps).
@@ -1188,6 +1190,13 @@ def plot_mode_I_III_interaction(
         Figure size.
     dpi : int, default 120
         Figure DPI.
+    Gc_lim : float, default 0.9
+        Threshold to estimate reference critical values from data:
+        - GIc_ref from rows with G1c/(G1c+G3c) >= Gc_lim
+        - GIIIc_ref from rows with G3c/(G1c+G3c) >= Gc_lim
+        If a subset is empty, all points are used as fallback.
+    fit_resolution : int, default 1000
+        Number of x-samples for plotting fitted interaction curves.
     """
     component_map = {
         'G1': 'G1c',
@@ -1352,6 +1361,198 @@ def plot_mode_I_III_interaction(
         labelpad=labelpad_y,
         color='black',
     )
+
+    # Overlay three forced-exponent interaction curves for G1/G3 space:
+    # (Gi/GIc)^n + (Giii/GIIIc)^m = 1 with n=m in {1,2,5}.
+    # Reference GIc/GIIIc are estimated first from Gc_lim subsets, then used
+    # as ODR start values (and deterministic fallback if ODR does not converge).
+    if x_col == 'G1c' and y_col == 'G3c':
+        try:
+            from scipy.odr import RealData, Model, ODR
+        except Exception:
+            RealData = Model = ODR = None
+
+        eps = 1e-12
+        gi_raw = np.nan_to_num(x_vals.astype(float), nan=np.nan, posinf=np.nan, neginf=np.nan)
+        giii_raw = np.nan_to_num(y_vals.astype(float), nan=np.nan, posinf=np.nan, neginf=np.nan)
+        sx_raw = np.nan_to_num(x_err_vals.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+        sy_raw = np.nan_to_num(y_err_vals.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
+        valid_mask = np.isfinite(gi_raw) & np.isfinite(giii_raw)
+        gi = np.clip(gi_raw[valid_mask], eps, None)
+        giii = np.clip(giii_raw[valid_mask], eps, None)
+        sx = np.clip(sx_raw[valid_mask], 1e-9, None)
+        sy = np.clip(sy_raw[valid_mask], 1e-9, None)
+        if gi.size == 0:
+            print("[plot_mode_I_III_interaction] No finite G1/G3 points for interaction overlays.")
+        else:
+            g13 = gi + giii
+            ratio_i = np.divide(gi, np.maximum(g13, eps))
+            ratio_iii = np.divide(giii, np.maximum(g13, eps))
+            mask_i = ratio_i >= float(Gc_lim)
+            mask_iii = ratio_iii >= float(Gc_lim)
+
+            def _weighted_mean_with_unc(values, stds):
+                v = np.asarray(values, dtype=float)
+                s = np.asarray(stds, dtype=float)
+                m = np.isfinite(v) & np.isfinite(s) & (s >= 0.0)
+                if not np.any(m):
+                    return np.nan, np.nan
+                v = v[m]
+                s = np.clip(s[m], 1e-6, None)
+                w = 1.0 / (s ** 2)
+                w_sum = np.maximum(np.sum(w), 1e-12)
+                mu = float(np.sum(w * v) / w_sum)
+                mu_unc = float(np.sqrt(1.0 / w_sum))
+                return mu, mu_unc
+
+            gi_seed_vals = gi[mask_i] if np.any(mask_i) else gi
+            sg1_seed_vals = sx[mask_i] if np.any(mask_i) else sx
+            giii_seed_vals = giii[mask_iii] if np.any(mask_iii) else giii
+            sg3_seed_vals = sy[mask_iii] if np.any(mask_iii) else sy
+
+            gic_ref, gic_ref_unc = _weighted_mean_with_unc(gi_seed_vals, sg1_seed_vals)
+            giiic_ref, giiic_ref_unc = _weighted_mean_with_unc(giii_seed_vals, sg3_seed_vals)
+            if not np.isfinite(gic_ref) or gic_ref <= 0:
+                gic_ref = float(np.nanmedian(gi))
+            if not np.isfinite(giiic_ref) or giiic_ref <= 0:
+                giiic_ref = float(np.nanmedian(giii))
+            if not np.isfinite(gic_ref_unc):
+                gic_ref_unc = 0.0
+            if not np.isfinite(giiic_ref_unc):
+                giiic_ref_unc = 0.0
+
+            n_samples = max(int(fit_resolution), 50)
+            exp_styles = [(1.0, '-'), (2.0, '--'), (5.0, ':')]
+            fit_rows = []
+
+            def _quality_from_reduced_chi2(red_chi2):
+                if not np.isfinite(red_chi2):
+                    return "unknown"
+                if red_chi2 < 0.5:
+                    return "possibly overestimated uncertainties"
+                if red_chi2 <= 2.0:
+                    return "good"
+                if red_chi2 <= 5.0:
+                    return "acceptable"
+                return "poor"
+
+            for p, ls in exp_styles:
+                def _implicit(beta, x):
+                    gic = max(float(beta[0]), eps)
+                    giiic = max(float(beta[1]), eps)
+                    gi_loc, giii_loc = x
+                    gi_loc = np.clip(np.asarray(gi_loc, dtype=float), eps, None)
+                    giii_loc = np.clip(np.asarray(giii_loc, dtype=float), eps, None)
+                    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                        return (gi_loc / gic) ** p + (giii_loc / giiic) ** p - 1.0
+
+                gic_fit = float(gic_ref)
+                giiic_fit = float(giiic_ref)
+                fit_source = 'Gc_lim reference'
+                res_var = np.nan
+
+                if RealData is not None:
+                    data = RealData(
+                        x=np.row_stack([gi, giii]),
+                        y=np.ones_like(gi),
+                        sx=np.row_stack([sx, sy]),
+                    )
+                    model = Model(_implicit, implicit=True)
+                    seeds = [
+                        (gic_ref, giiic_ref),
+                        (np.nanmedian(gi), np.nanmedian(giii)),
+                        (1.25 * gic_ref, 1.25 * giiic_ref),
+                        (0.75 * gic_ref, 0.75 * giiic_ref),
+                    ]
+                    runs = []
+                    for s_gic, s_giiic in seeds:
+                        try:
+                            odr = ODR(
+                                data,
+                                model,
+                                beta0=np.array([max(float(s_gic), eps), max(float(s_giiic), eps)], dtype=float),
+                                ifixb=[0, 0],
+                            )
+                            odr.set_job(fit_type=1, deriv=0)
+                            out = odr.run()
+                            if np.isfinite(getattr(out, 'sum_square', np.nan)):
+                                runs.append(out)
+                        except Exception:
+                            continue
+                    if runs:
+                        best = runs[int(np.argmin([float(r.sum_square) for r in runs]))]
+                        gic_fit = max(float(best.beta[0]), eps)
+                        giiic_fit = max(float(best.beta[1]), eps)
+                        res_var = float(getattr(best, 'res_var', np.nan))
+                        fit_source = f'ODR ({len(runs)}/{len(seeds)} starts)'
+
+                implicit_res = (gi / max(gic_fit, eps)) ** p + (giii / max(giiic_fit, eps)) ** p - 1.0
+                dres_dgi = p * np.power(gi / max(gic_fit, eps), p - 1.0) / max(gic_fit, eps)
+                dres_dgiii = p * np.power(giii / max(giiic_fit, eps), p - 1.0) / max(giiic_fit, eps)
+                sigma_res = np.sqrt((dres_dgi * sx) ** 2 + (dres_dgiii * sy) ** 2)
+                sigma_res = np.clip(np.nan_to_num(sigma_res, nan=1e-9, posinf=1e9, neginf=1e-9), 1e-9, None)
+                chi2 = float(np.sum((implicit_res / sigma_res) ** 2))
+                dof = max(int(gi.size) - 2, 1)
+                red_chi2 = float(chi2 / dof)
+                rmse_implicit = float(np.sqrt(np.mean(implicit_res ** 2)))
+                quality = _quality_from_reduced_chi2(red_chi2)
+
+                fit_rows.append({
+                    'p': float(p),
+                    'gic_fit': gic_fit,
+                    'giiic_fit': giiic_fit,
+                    'res_var': res_var,
+                    'chi2': chi2,
+                    'red_chi2': red_chi2,
+                    'rmse_implicit': rmse_implicit,
+                    'quality': quality,
+                    'source': fit_source,
+                    'linestyle': ls,
+                })
+
+                x_line = np.linspace(eps, gic_fit, n_samples)
+                with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+                    term = 1.0 - (x_line / gic_fit) ** p
+                    y_line = np.full_like(x_line, np.nan, dtype=float)
+                    valid = term >= 0.0
+                    y_line[valid] = giiic_fit * (term[valid] ** (1.0 / p))
+                valid_curve = np.isfinite(x_line) & np.isfinite(y_line) & (y_line >= 0.0)
+                if np.any(valid_curve):
+                    ax.plot(
+                        x_line[valid_curve],
+                        y_line[valid_curve],
+                        color=lo.COLORS.get('indigo', '#8319d7'),
+                        linewidth=1.5,
+                        alpha=0.9,
+                        linestyle=ls,
+                        zorder=2,
+                    )
+
+            print("")
+            print("=" * 72)
+            print("plot_mode_I_III_interaction - forced n=m diagnostics")
+            print("-" * 72)
+            print(f"  data points        : N={gi.size}")
+            print(f"  Gc threshold       : Gc_lim={float(Gc_lim):.3f}")
+            print(f"  subset counts      : N_GIc={int(np.sum(mask_i))}, N_GIIIc={int(np.sum(mask_iii))}")
+            print(f"  GIc reference      : {gic_ref:.4f} +/- {gic_ref_unc:.4f} J/m^2")
+            print(f"  GIIIc reference    : {giiic_ref:.4f} +/- {giiic_ref_unc:.4f} J/m^2")
+            print("-" * 72)
+            for row in fit_rows:
+                print(f"  n=m={row['p']:.0f} ({row['source']})")
+                print(
+                    f"    GIc={row['gic_fit']:.4f}, GIIIc={row['giiic_fit']:.4f}, "
+                    f"res_var={row['res_var']:.3e}"
+                )
+                print(
+                    f"    chi^2={row['chi2']:.4g}, reduced chi^2={row['red_chi2']:.4g}, "
+                    f"RMSE_implicit={row['rmse_implicit']:.4g}, quality={row['quality']}"
+                )
+            print("=" * 72)
+            print("")
+    else:
+        print("[plot_mode_I_III_interaction] Fixed-exponent fit overlay skipped (requires x_component='G1' and y_component='G3').")
+
     if x_lim is not None:
         ax.set_xlim(x_lim)
     if y_lim is not None:
@@ -2007,6 +2208,11 @@ def plot_load_config_ERR(
     only_pst=False,
     switch_x_axis_dir=False,
     phi_filter='all',
+    jitter_offset=0.25,
+    x_lim=None,
+    y_lim=None,
+    show_rel_G=False,
+    axis_step_equivalence=(10.0, 0.10),
 ):
     """
     Raw datapoints with uncertainty bars over additional applied force.
@@ -2023,6 +2229,19 @@ def plot_load_config_ERR(
         - 'all': no inclination filtering
         - 'upslope': keep only phi > 0
         - 'downslope': keep only phi < 0
+    jitter_offset : float, default 0.25
+        Constant horizontal jitter offset in x-data units (N), used uniformly
+        for all weight bundles and for mode center separation.
+    x_lim : tuple or None, default None
+        Optional x-axis limits as (xmin, xmax).
+    y_lim : tuple or None, default None
+        Optional y-axis limits as (ymin, ymax).
+    show_rel_G : bool, default False
+        If True, normalize mode ERR values by `Gc` and plot mode ratios
+        (G1c/Gc, G2c/Gc, G3c/Gc) instead of absolute ERR values.
+    axis_step_equivalence : tuple, default (10.0, 0.05)
+        Visual x/y distance equivalence defined as (x_step, y_step):
+        one x-step has the same on-screen length as one y-step.
     """
     if isinstance(df_or_path, pd.DataFrame):
         df = df_or_path.copy()
@@ -2035,6 +2254,8 @@ def plot_load_config_ERR(
             return None
 
     required_cols = ['total weights', 'G1c', 'G2c', 'G3c']
+    if show_rel_G:
+        required_cols.append('Gc')
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         print(f"Error: Missing required columns: {missing_cols}")
@@ -2072,6 +2293,8 @@ def plot_load_config_ERR(
     plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce').astype('float64')
     plot_df['G2c'] = pd.to_numeric(plot_df['G2c'], errors='coerce').astype('float64')
     plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce').astype('float64')
+    if show_rel_G:
+        plot_df['Gc'] = pd.to_numeric(plot_df['Gc'], errors='coerce').astype('float64')
     g1_unc_col = 'G1c_uncertainty' if 'G1c_uncertainty' in plot_df.columns else None
     g2_unc_col = 'G2c_uncertainty' if 'G2c_uncertainty' in plot_df.columns else None
     g3_unc_col = 'G3c_uncertainty' if 'G3c_uncertainty' in plot_df.columns else None
@@ -2097,6 +2320,9 @@ def plot_load_config_ERR(
     # total weights are stored in kg; convert to force with g=9.81 m/s^2.
     plot_df['F_w'] = plot_df['total weights'] * 9.81
     plot_df = plot_df.dropna(subset=['G1c', 'G2c', 'G3c'])
+    if show_rel_G:
+        plot_df = plot_df.dropna(subset=['Gc'])
+        plot_df = plot_df[plot_df['Gc'].abs() > 1e-12]
     if plot_df.empty:
         print("No valid rows to plot (check filters and required columns).")
         return None
@@ -2105,6 +2331,22 @@ def plot_load_config_ERR(
     plot_df['F_w_plot'] = pd.to_numeric(plot_df['F_w'], errors='coerce').fillna(0.0)
     # x uncertainty from total-weights uncertainty (kg) propagated to force (N).
     plot_df['F_w_unc'] = (9.81 * pd.to_numeric(plot_df['total_weights_unc'], errors='coerce')).fillna(0.0).clip(lower=0.0)
+
+    if show_rel_G:
+        gc_safe = plot_df['Gc'].to_numpy(dtype=float)
+        plot_df['G1_plot'] = plot_df['G1c'].to_numpy(dtype=float) / gc_safe
+        plot_df['G2_plot'] = plot_df['G2c'].to_numpy(dtype=float) / gc_safe
+        plot_df['G3_plot'] = plot_df['G3c'].to_numpy(dtype=float) / gc_safe
+        plot_df['G1_plot_unc'] = plot_df['G1c_unc'].to_numpy(dtype=float) / np.abs(gc_safe)
+        plot_df['G2_plot_unc'] = plot_df['G2c_unc'].to_numpy(dtype=float) / np.abs(gc_safe)
+        plot_df['G3_plot_unc'] = plot_df['G3c_unc'].to_numpy(dtype=float) / np.abs(gc_safe)
+    else:
+        plot_df['G1_plot'] = plot_df['G1c']
+        plot_df['G2_plot'] = plot_df['G2c']
+        plot_df['G3_plot'] = plot_df['G3c']
+        plot_df['G1_plot_unc'] = plot_df['G1c_unc']
+        plot_df['G2_plot_unc'] = plot_df['G2c_unc']
+        plot_df['G3_plot_unc'] = plot_df['G3c_unc']
 
     # Match style behavior used across the project.
     setup_visualization_style()
@@ -2123,35 +2365,33 @@ def plot_load_config_ERR(
     x_vals = plot_df['F_w_plot'].to_numpy(dtype=float)
     x_err_vals = plot_df['F_w_unc'].to_numpy(dtype=float)
     x_groups = np.round(x_vals, 2)
-    finite_x = x_vals[np.isfinite(x_vals)]
-    unique_x = np.sort(np.unique(np.round(finite_x, 2))) if finite_x.size else np.array([0.0])
-    x_diffs = np.diff(unique_x) if unique_x.size > 1 else np.array([])
-    min_spacing = np.min(x_diffs[x_diffs > 0]) if np.any(x_diffs > 0) else 1.0
-    # Strip/beeswarm-like horizontal spread inside each weight group.
-    # Keep jitter small relative to distance between weight groups.
-    strip_half_width = max(0.10 * min_spacing, 0.08)
-    mode_center_offsets = {'G1c': -0.45 * strip_half_width, 'G2c': 0.0, 'G3c': 0.45 * strip_half_width}
+    jitter_offset = abs(float(jitter_offset))
+    # Constant strip/beeswarm offsets for all weight bundles.
+    strip_half_width = jitter_offset
+    if switch_x_axis_dir:
+        # Mirror jitter orientation when axis direction is reversed.
+        mode_center_offsets = {'G1c': jitter_offset, 'G2c': 0.0, 'G3c': -jitter_offset}
+    else:
+        mode_center_offsets = {'G1c': -jitter_offset, 'G2c': 0.0, 'G3c': jitter_offset}
+    # Keep draw order fixed: I -> II -> III.
     series_specs = [
-        ('G1c', 'G1c_unc', mode_i_color, 1, '^'),  # Mode I: triangle
-        ('G2c', 'G2c_unc', mode_ii_color, 2, 's'),  # Mode II: rectangle/square
-        ('G3c', 'G3c_unc', mode_iii_color, 3, 'o'),  # Mode III: round
+        ('G1_plot', 'G1_plot_unc', mode_i_color, 1, '^'),  # Mode I: triangle
+        ('G2_plot', 'G2_plot_unc', mode_ii_color, 2, 's'),  # Mode II: rectangle/square
+        ('G3_plot', 'G3_plot_unc', mode_iii_color, 3, 'o'),  # Mode III: round
     ]
+    rng = np.random.default_rng()
     for y_col, y_unc_col, series_color, z, marker_shape in series_specs:
         y_vals = plot_df[y_col].to_numpy(dtype=float)
         y_err_vals = plot_df[y_unc_col].to_numpy(dtype=float)
         x_plot_vals = x_vals.copy()
         mode_offset = mode_center_offsets.get(y_col, 0.0)
-        # Build deterministic strip positions per force group (sorted by y).
+        # Build random strip positions per force group.
         for g in np.sort(np.unique(x_groups[np.isfinite(x_groups)])):
             idx = np.where(np.isclose(x_groups, g, atol=1e-12))[0]
             if idx.size == 0:
                 continue
-            idx_sorted = idx[np.argsort(y_vals[idx], kind='mergesort')]
-            if idx.size == 1:
-                offsets = np.array([0.0])
-            else:
-                offsets = np.linspace(-strip_half_width, strip_half_width, idx.size)
-            x_plot_vals[idx_sorted] = x_vals[idx_sorted] + mode_offset + offsets
+            offsets = rng.uniform(-strip_half_width, strip_half_width, size=idx.size)
+            x_plot_vals[idx] = x_vals[idx] + mode_offset + offsets
         errorbar_color = _alpha_equivalent_color(series_color, ERRORBAR_STYLES['alpha'])
         for i in range(len(x_plot_vals)):
             if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
@@ -2197,8 +2437,12 @@ def plot_load_config_ERR(
         labelpad=labelpad_x,
         color='black',
     )
+    if show_rel_G:
+        y_label = r'Mode ratio $\psi$ $\longrightarrow$'
+    else:
+        y_label = r'Energy release rate $\mathcal{G}$ (J/m$^2$) $\longrightarrow$'
     ax.set_ylabel(
-        r'Energy release rate $\mathcal{G}$ (J/m$^2$) $\longrightarrow$',
+        y_label,
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_y,
         color='black',
@@ -2208,22 +2452,72 @@ def plot_load_config_ERR(
 
     x_valid = plot_df['F_w_plot'].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
     if x_valid.size > 0:
-        x_min = float(np.min(x_valid))
-        x_max = float(np.max(x_valid))
+        x_min_auto = float(np.min(x_valid))
+        x_max_auto = float(np.max(x_valid))
     else:
-        x_min, x_max = 0.0, 1.0
-    span = max(x_max - x_min, 1.0)
-    x_margin = 0.06 * span
+        x_min_auto, x_max_auto = 0.0, 1.0
+    x_span = max(x_max_auto - x_min_auto, 1.0)
+    x_margin = 0.06 * x_span
+    if x_lim is not None:
+        x_lo, x_hi = float(x_lim[0]), float(x_lim[1])
+    else:
+        x_lo = x_min_auto - x_margin
+        x_hi = x_max_auto + x_margin
     if switch_x_axis_dir:
         # Right-to-left axis direction (zero on the right, positive values to the left).
-        ax.set_xlim(x_max + x_margin, min(0.0, x_min - x_margin))
+        ax.set_xlim(max(x_lo, x_hi), min(x_lo, x_hi))
     else:
-        ax.set_xlim(x_min - x_margin, x_max + x_margin)
+        ax.set_xlim(min(x_lo, x_hi), max(x_lo, x_hi))
+    if y_lim is not None:
+        ax.set_ylim(float(y_lim[0]), float(y_lim[1]))
+
+    # Enforce configurable visual spacing equivalence:
+    # one x_step has the same on-screen length as one y_step.
+    try:
+        x_step_eq, y_step_eq = axis_step_equivalence
+        x_step_eq = abs(float(x_step_eq))
+        y_step_eq = abs(float(y_step_eq))
+    except Exception:
+        x_step_eq, y_step_eq = 10.0, 0.05
+    if x_step_eq <= 0 or y_step_eq <= 0:
+        x_step_eq, y_step_eq = 10.0, 0.05
+    ax.set_aspect(x_step_eq / y_step_eq, adjustable='box')
+
+    import matplotlib.ticker as mticker
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(x_step_eq))
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(y_step_eq))
 
     # Draw grouped mean values (per applied weight) as black markers with mode shape.
     plot_df['F_w_group'] = plot_df['F_w_plot'].round(2)
-    grouped_means = plot_df.groupby('F_w_group', dropna=True)[['G1c', 'G2c', 'G3c']].mean(numeric_only=True)
-    mean_specs = [('G1c', '^', 4), ('G2c', 's', 5), ('G3c', 'o', 6)]
+    grouped_means = plot_df.groupby('F_w_group', dropna=True)[['G1_plot', 'G2_plot', 'G3_plot']].mean(numeric_only=True)
+    # Uncertainty of grouped means from per-point uncertainties:
+    # sigma_mean = sqrt(sum(sigma_i^2)) / n
+    grouped_mean_errs = {}
+    for plot_col, unc_col in [('G1_plot', 'G1_plot_unc'), ('G2_plot', 'G2_plot_unc'), ('G3_plot', 'G3_plot_unc')]:
+        err_ser = plot_df.groupby('F_w_group', dropna=True)[unc_col].apply(
+            lambda s: (np.sqrt(np.sum(np.square(pd.to_numeric(s, errors='coerce').dropna().to_numpy(dtype=float)))) / max(len(s.dropna()), 1))
+        )
+        grouped_mean_errs[plot_col] = err_ser
+    mean_specs = [('G1_plot', '^', 4), ('G2_plot', 's', 5), ('G3_plot', 'o', 6)]
+    mean_cols_map = {
+        fr'mode I': 'G1_plot',
+        fr'mode II': 'G2_plot',
+        fr'mode III': 'G3_plot',
+    }
+    print("[plot_load_config_ERR] Grouped mean values (black markers)")
+    value_unit = "-" if show_rel_G else "J/m^2"
+    for mode_name, col_name in mean_cols_map.items():
+        series_mean_vals = grouped_means[col_name].dropna()
+        if len(series_mean_vals) == 0:
+            print(f"  {mode_name}: no grouped means available")
+            continue
+        overall_mean = float(series_mean_vals.mean())
+        print(f"  {mode_name}:")
+        print(f"    overall grouped mean = {overall_mean:.4f} {value_unit}")
+        per_weight_text = ", ".join(
+            [f"{xv:.2f}N:{yv:.4f}" for xv, yv in zip(series_mean_vals.index, series_mean_vals.values)]
+        )
+        print(f"    per weight -> {per_weight_text}")
     for y_col, _, z in mean_specs:
         series_mean = grouped_means[y_col].dropna()
         if len(series_mean) >= 2:
@@ -2231,8 +2525,8 @@ def plot_load_config_ERR(
                 series_mean.index.to_numpy(dtype=float),
                 series_mean.to_numpy(dtype=float),
                 color='black',
-                linewidth=1.0,
-                alpha=0.2,
+                linewidth=1.5,
+                alpha=0.3,
                 zorder=z - 0.2,
             )
     for x_group, mean_row in grouped_means.iterrows():
@@ -2252,17 +2546,106 @@ def plot_load_config_ERR(
                 edgecolors='none',
                 zorder=z,
             )
+            # For PST-only mode-ratio plots: annotate mean ± error next to black mean markers.
+            if only_pst and show_rel_G:
+                y_err = np.nan
+                if y_col in grouped_mean_errs and x_group in grouped_mean_errs[y_col].index:
+                    y_err = grouped_mean_errs[y_col].loc[x_group]
+                if np.isfinite(y_err):
+                    ax.text(
+                        x_group + 0.15,
+                        y_mean,
+                        f"{y_mean:.2f}±{y_err:.2f}",
+                        fontsize=VISUALIZATION_STYLES['font_size'],
+                        color='black',
+                        alpha=0.95,
+                        ha='left',
+                        va='center',
+                        zorder=z + 0.1,
+                    )
 
+    # Upper-left mode label text (no background), in respective series colors.
+    text_x = 0.02
+    text_y0 = 0.98
+    text_dy = 0.055
+    ax.text(
+        text_x, text_y0, "mode I",
+        transform=ax.transAxes,
+        ha='left', va='top',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        color=mode_i_color,
+        alpha=1.0,
+        zorder=15,
+    )
+    ax.text(
+        text_x, text_y0 - text_dy, "mode II",
+        transform=ax.transAxes,
+        ha='left', va='top',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        color=mode_ii_color,
+        alpha=1.0,
+        zorder=15,
+    )
+    ax.text(
+        text_x, text_y0 - 2 * text_dy, "mode III",
+        transform=ax.transAxes,
+        ha='left', va='top',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        color=mode_iii_color,
+        alpha=1.0,
+        zorder=15,
+    )
+    ax.text(
+        text_x, text_y0 - 3 * text_dy, "mean value",
+        transform=ax.transAxes,
+        ha='left', va='top',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        color='black',
+        alpha=1.0,
+        zorder=15,
+    )
+
+    # Layout style like parameter-study plot:
+    # no left/top/right frame, no tick marks, dotted horizontal guides in back.
     ax.tick_params(
-        axis='both', which='major',
+        axis='x', which='major',
         labelsize=VISUALIZATION_STYLES['font_size'],
         pad=10, width=tick_width, length=tick_length,
-        bottom=True, top=True, left=True, right=True,
+        bottom=True, top=False, labelbottom=True,
         labelcolor='black', color='grey',
     )
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(frame_thickness)
+    ax.tick_params(
+        axis='y', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10, width=0, length=0,
+        left=False, right=False, labelleft=True, labelright=False,
+        labelcolor='black', color='grey',
+    )
+    ax.spines['left'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['bottom'].set_visible(True)
+    ax.spines['bottom'].set_linewidth(frame_thickness)
+    ax.spines['bottom'].set_color('black')
+
+    y_lo, y_hi = ax.get_ylim()
+    y_min, y_max = (min(y_lo, y_hi), max(y_lo, y_hi))
+    y_tick_vals = [
+        yv for yv in ax.get_yticks()
+        if np.isfinite(yv)
+        and (y_min - 1e-12) <= yv <= (y_max + 1e-12)
+        and not np.isclose(yv, 0.0, atol=1e-12)
+    ]
+    for yv in y_tick_vals:
+        ax.axhline(
+            y=yv,
+            color='grey',
+            linewidth=2,
+            linestyle=(0, (0.05, 2.0)),
+            dash_capstyle='round',
+            alpha=0.7,
+            zorder=-5,
+        )
     ax.grid(False)
     plt.show()
     return fig

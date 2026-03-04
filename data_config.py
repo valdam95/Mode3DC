@@ -1208,6 +1208,7 @@ def calculate_err_weac(
     nu_wl=0.15,
     h_wl_err=1.0,
     h_s_err=2.5,
+    a_err=5.0,
     l_dw_err=5.0,
     L_err=5.0,
     rho_err=1.0,
@@ -1215,6 +1216,7 @@ def calculate_err_weac(
     nu_wl_err=0.05,
     pc_rel_err=0.01,
     phi_err=1.0,
+    theta_err=1.0,
     total_weights_rel_err=0.01,
 ):
     """
@@ -1248,6 +1250,8 @@ def calculate_err_weac(
         Absolute uncertainty of weak-layer thickness (mm).
     h_s_err : float, default 2.5
         Absolute uncertainty of slab height h_s (mm).
+    a_err : float, default 5.0
+        Absolute uncertainty of crack length a (mm).
     l_dw_err : float, default 2.5
         Absolute uncertainty of l_dw (mm).
     L_err : float, default 2.5
@@ -1262,6 +1266,9 @@ def calculate_err_weac(
         Relative uncertainty of P_c[1] (1% = 0.01).
     phi_err : float, default 1.0
         Absolute uncertainty of inclination angle phi (degrees).
+    theta_err : float, default 1.0
+        Absolute uncertainty of in-plane angle theta (degrees). The nominal
+        value is kept at theta=0 in ScenarioConfig.
     total_weights_rel_err : float, default 0.01
         Relative uncertainty of total weights used for surface-load calculation
         (1% = 0.01).
@@ -1383,7 +1390,7 @@ def calculate_err_weac(
 
         return np.array([F_x, F_y, F_z, M_x, M_y, M_z], dtype=float)
 
-    def _setup_weac_and_calculate_err(experiment, pc_force, h_s_value, rho_values, h_wl_value, E_wl_value, nu_wl_value, l_dw_value, L_value, phi_value, include_loading_head_mass=True):
+    def _setup_weac_and_calculate_err(experiment, pc_force, h_s_value, rho_values, h_wl_value, E_wl_value, nu_wl_value, l_dw_value, L_value, phi_value, a_value, theta_value, include_loading_head_mass=True):
         layers = [
             Layer(rho=float(rho_values[0]), h=float(h_s_value) / 4),
             Layer(rho=float(rho_values[1]), h=float(h_s_value) / 4),
@@ -1401,10 +1408,10 @@ def calculate_err_weac(
 
         phi = float(phi_value)
         weight_number = experiment['weight number']
-        a = float(experiment['a'])
+        a = float(a_value)
         l_total = float(L_value)
 
-        if pd.notna(weight_number) and phi > 0:
+        if pd.notna(weight_number) and phi >= 0:
             l_loading_head = 50.0
             l_dw = float(l_dw_value)
             l_load = float(weight_number) * 50.0
@@ -1465,7 +1472,7 @@ def calculate_err_weac(
         scenario = ScenarioConfig(
             system_type='-pst',
             phi=phi,
-            theta=0,
+            theta=float(theta_value),
             b=290,
             surface_load=surface_load,
             load_vector_left=_compute_load_vector(
@@ -1617,6 +1624,8 @@ def calculate_err_weac(
             E_wl_u = ufloat(float(E_wl), abs(float(E_wl_err)))
             nu_wl_u = ufloat(float(nu_wl), abs(float(nu_wl_err)))
             phi_u = ufloat(float(experiment['phi']), abs(float(phi_err)))
+            theta_u = ufloat(0.0, abs(float(theta_err)))
+            a_u = ufloat(float(experiment['a']), abs(float(a_err)))
 
             l_dw_nominal = float(experiment['l_dw']) if pd.notna(experiment['l_dw']) else 0.0
             L_nominal = float(experiment['L']) if pd.notna(experiment['L']) else 10000.0
@@ -1634,6 +1643,8 @@ def calculate_err_weac(
                 'E_wl': _ensure_positive(E_wl_u.nominal_value),
                 'nu_wl': _clip_nu(nu_wl_u.nominal_value),
                 'phi': float(phi_u.nominal_value),
+                'theta': float(theta_u.nominal_value),
+                'a': _ensure_positive(a_u.nominal_value),
                 'l_dw': _ensure_positive(l_dw_u.nominal_value),
                 'L': _ensure_positive(L_u.nominal_value),
             }
@@ -1649,6 +1660,8 @@ def calculate_err_weac(
                     E_wl_value=values['E_wl'],
                     nu_wl_value=values['nu_wl'],
                     phi_value=values['phi'],
+                    a_value=values['a'],
+                    theta_value=values['theta'],
                     l_dw_value=values['l_dw'],
                     L_value=values['L'],
                     include_loading_head_mass=not is_pst_afn,
@@ -1671,6 +1684,8 @@ def calculate_err_weac(
                 'E_wl': float(E_wl_u.std_dev),
                 'nu_wl': float(nu_wl_u.std_dev),
                 'phi': float(phi_u.std_dev),
+                'theta': float(theta_u.std_dev),
+                'a': float(a_u.std_dev),
                 'l_dw': float(l_dw_u.std_dev),
                 'L': float(L_u.std_dev),
             }
@@ -1686,7 +1701,7 @@ def calculate_err_weac(
                 plus_values[var_name] = center + sigma
                 minus_values[var_name] = center - sigma
 
-                if var_name in ('h_s', 'h_wl', 'E_wl', 'l_dw', 'L'):
+                if var_name in ('h_s', 'h_wl', 'E_wl', 'a', 'l_dw', 'L'):
                     plus_values[var_name] = _ensure_positive(plus_values[var_name])
                     minus_values[var_name] = _ensure_positive(minus_values[var_name])
                 elif var_name == 'nu_wl':
@@ -2654,9 +2669,13 @@ def explore_parquet_data(afn, column_name, raw_data_path, raw_info_data_path):
 
 
 def opt_GI_GII_ODR(
-        df, dim=1, gc0=.6, exp=2, var='B',
+        df, dim=1, gc0=.6, gc0_I=None, gc0_III=None, exp=2, var='B',
         indi=False, ifixb=[1, 1, 0, 0],
-        print_results=True, verbose=False):
+        print_results=True, verbose=False,
+        same_exponent=False,
+        n_bounds=(0.1, 10.0),
+        m_bounds=(0.1, 10.0),
+        gc_bounds=(1e-3, 10.0)):
     """
     Orthogonal distance regression for GI/GIII interaction law.
 
@@ -2694,20 +2713,34 @@ def opt_GI_GII_ODR(
     def residual(beta, x, var='B', bounds=False):
         GIc, GIIIc, n, m = beta
         Gi, Giii = x
+        eps = 1e-12
+        GIc_s = max(float(GIc), eps)
+        GIIIc_s = max(float(GIIIc), eps)
+        n_s = max(float(n), eps)
+        m_s = max(float(m), eps)
+        if same_exponent:
+            m_s = n_s
+        Gi_s = np.clip(np.asarray(Gi, dtype=float), eps, None)
+        Giii_s = np.clip(np.asarray(Giii, dtype=float), eps, None)
 
         if bounds:
-            if not (1 <= n <= 10 and 1 <= m <= 10):
-                return 1e3
+            n_lo, n_hi = n_bounds
+            m_lo, m_hi = m_bounds
+            gc_lo, gc_hi = gc_bounds
+            if not (gc_lo <= GIc_s <= gc_hi and gc_lo <= GIIIc_s <= gc_hi and n_lo <= n_s <= n_hi and m_lo <= m_s <= m_hi):
+                return np.full_like(Gi_s, 1e3, dtype=float)
 
         with np.errstate(invalid='ignore'):
             if var == 'A':
-                res = ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (2 / (n + m)) - 1
+                res = ((Gi_s / GIc_s) ** n_s + (Giii_s / GIIIc_s) ** m_s) ** (2 / (n_s + m_s)) - 1
             elif var == 'B':
-                res = ((Gi / GIc) ** n + (Giii / GIIIc) ** m) - 1
+                res = ((Gi_s / GIc_s) ** n_s + (Giii_s / GIIIc_s) ** m_s) - 1
             elif var == 'C':
-                res = ((Gi / GIc) ** (1 / n) + (Giii / GIIIc) ** (1 / m)) - 1
+                res = ((Gi_s / GIc_s) ** (1 / n_s) + (Giii_s / GIIIc_s) ** (1 / m_s)) - 1
             elif var == 'BK':
-                res = (GIc + (GIIIc - GIc) * (Giii / (Gi + Giii)) ** m) / (Gi + Giii) - 1
+                denom = np.clip(Gi_s + Giii_s, eps, None)
+                ratio = np.clip(Giii_s / denom, eps, 1.0)
+                res = (GIc_s + (GIIIc_s - GIc_s) * ratio ** m_s) / denom - 1
             else:
                 raise NotImplementedError(f'Criterion type {var} not implemented.')
         return res
@@ -2715,6 +2748,13 @@ def opt_GI_GII_ODR(
     def param_jacobian(beta, x, var='B', *args):
         GIc, GIIIc, n, m = beta
         Gi, Giii = x
+        eps = 1e-12
+        GIc = max(float(GIc), eps)
+        GIIIc = max(float(GIIIc), eps)
+        n = max(float(n), eps)
+        m = max(float(m), eps)
+        Gi = np.clip(np.asarray(Gi, dtype=float), eps, None)
+        Giii = np.clip(np.asarray(Giii, dtype=float), eps, None)
 
         with np.errstate(invalid='ignore'):
             if var == 'A':
@@ -2745,6 +2785,13 @@ def opt_GI_GII_ODR(
     def value_jacobian(beta, x, var='B', *args):
         GIc, GIIIc, n, m = beta
         Gi, Giii = x
+        eps = 1e-12
+        GIc = max(float(GIc), eps)
+        GIIIc = max(float(GIIIc), eps)
+        n = max(float(n), eps)
+        m = max(float(m), eps)
+        Gi = np.clip(np.asarray(Gi, dtype=float), eps, None)
+        Giii = np.clip(np.asarray(Giii, dtype=float), eps, None)
 
         if var == 'A':
             dGi = (2 * (Gi / GIc) ** n * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * n) / (Gi * (m + n))
@@ -2779,7 +2826,7 @@ def opt_GI_GII_ODR(
         ndof_local = exp_local.shape[1] - 4
         return RealData(exp_local, y=dim_local, sx=std_local), ndof_local
 
-    def get_initial_guesses(gc0=0.7, exp=2, indi=False, var='B', verbose=False):
+    def get_initial_guesses(gc0_I_local=0.7, gc0_III_local=0.7, exp=2, indi=False, var='B', verbose=False):
         if isinstance(exp, tuple) and len(exp) == 2:
             n0 = [exp[0]]
             m0 = [exp[1]]
@@ -2787,7 +2834,8 @@ def opt_GI_GII_ODR(
             n0 = m0 = exp
         else:
             if var == 'C':
-                n0 = m0 = np.linspace(1 / exp, 1, exp, endpoint=True)
+                n_points = max(int(exp), 6)
+                n0 = m0 = np.geomspace(0.1, 2.0, n_points)
             else:
                 n0 = m0 = 1 + np.arange(exp)
 
@@ -2797,8 +2845,13 @@ def opt_GI_GII_ODR(
             print()
 
         if indi:
-            return list(product([gc0], [gc0], n0, m0))
-        return np.column_stack([np.full([len(n0), 2], gc0), n0, n0])
+            return list(product([gc0_I_local], [gc0_III_local], n0, m0))
+        return np.column_stack([
+            np.full(len(n0), gc0_I_local),
+            np.full(len(n0), gc0_III_local),
+            n0,
+            n0
+        ])
 
     def run_regression(
             data, model, beta0,
@@ -2833,7 +2886,7 @@ def opt_GI_GII_ODR(
         return fit
 
     def results(fit):
-        GIc, GIIIc, n, m = fit['final'].beta
+        GIc, GIIIc, n, m = fit['params']
         chi2 = fit['reduced_chi_squared']
         pval = fit['p_value']
         r2 = fit['R_squared']
@@ -2845,6 +2898,11 @@ def opt_GI_GII_ODR(
         print(f"GIIIc      {GIIIc:8.3f}    Mode III fracture toughness")
         print(f"n          {n:8.3f}    Interaction-law exponent")
         print(f"m          {m:8.3f}    Interaction-law exponent")
+        if str(fit.get('var', var)).upper() == 'C':
+            inv_n = np.inf if abs(float(n)) < 1e-15 else 1.0 / float(n)
+            inv_m = np.inf if abs(float(m)) < 1e-15 else 1.0 / float(m)
+            print(f"1/n        {inv_n:8.3f}    Effective exponent in criterion C")
+            print(f"1/m        {inv_m:8.3f}    Effective exponent in criterion C")
         print(rule)
         print(f"chi2       {chi2:8.3f}    Reduced chi^2 per DOF (goodness of fit)")
         print(f"p-value    {pval:8.1e}    p-value (statistically significant if below 0.05)")
@@ -2857,14 +2915,47 @@ def opt_GI_GII_ODR(
         fjacb=param_jacobian,
         fjacd=value_jacobian,
         implicit=True,
-        extra_args=(var,)
+        extra_args=(var, True)
     )
-    guess = get_initial_guesses(gc0=gc0, exp=exp, indi=indi, var=var, verbose=verbose)
-    runs = [r for r in (run_regression(data, model, g, ifixb=ifixb) for g in guess) if r.info <= 3]
+    gc0_I_eff = float(gc0) if gc0_I is None else float(gc0_I)
+    gc0_III_eff = float(gc0) if gc0_III is None else float(gc0_III)
+    guess = get_initial_guesses(
+        gc0_I_local=gc0_I_eff,
+        gc0_III_local=gc0_III_eff,
+        exp=exp,
+        indi=indi,
+        var=var,
+        verbose=verbose
+    )
+    ifixb_eff = list(ifixb)
+    if same_exponent and len(ifixb_eff) >= 4:
+        # Tie n and m by fixing m and evaluating residual with m := n.
+        ifixb_eff[3] = 0
+        guess = [np.array([g[0], g[1], g[2], g[2]], dtype=float) for g in guess]
+    runs_all = []
+    for g in guess:
+        try:
+            runs_all.append(run_regression(
+                data,
+                model,
+                g,
+                ifixb=ifixb_eff,
+                # Numerical derivatives are more robust for constrained/tied exponents.
+                deriv=0 if same_exponent else 3,
+            ))
+        except Exception:
+            continue
+    runs = [r for r in runs_all if np.isfinite(getattr(r, 'sum_square', np.nan))]
     if not runs:
         raise RuntimeError("ODR did not converge for any initial guess.")
     final = runs[np.argmin([run.sum_square for run in runs])]
     fit = calc_fit_statistics(final, ndof)
+    if same_exponent:
+        fit['params'] = np.array(fit['params'], dtype=float)
+        fit['params'][3] = fit['params'][2]
+        fit['stddev'] = np.array(fit['stddev'], dtype=float)
+        # m is tied to n; report same uncertainty.
+        fit['stddev'][3] = fit['stddev'][2]
     fit['var'] = var
     if print_results:
         results(fit)
