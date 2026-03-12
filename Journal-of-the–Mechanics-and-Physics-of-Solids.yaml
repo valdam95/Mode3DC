@@ -397,6 +397,7 @@ current_manuscript:
       Examples:
         \SI{2380}{\metre}, \SI{26.8}{\degree}, \SIrange{0.75}{8.5}{\milli\metre\per\second}
         Density: \SI{308 \pm 22}{\kilogram\per\cubic\metre} (siunitx handles \pm via separate-uncertainty).
+        Percentage: \SI{30}{\percent}
 
   current_section_structure:
     - section: "1. Introduction"

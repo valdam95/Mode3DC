@@ -907,7 +907,7 @@ def merge_load_data(raw_data_path, raw_info_data_path, load_data_dir, force_over
     
     return df_merged, df_info_merged
 
-def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=False):
+def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=False, pc_rel_err=0.01):
     """
     Merge load signal analyser results into master dataset files.
     
@@ -929,6 +929,9 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
         Filepath to master Parquet metadata file (e.g., ON4PB_raw_info.parquet)
     force_overwrite : bool, default False
         If True, updates existing analysis columns. If False, returns existing data if columns exist.
+    pc_rel_err : float, default 0.01
+        Relative uncertainty of fracture force P_c[1] used to propagate uncertainty
+        to normalized force rate (1% = 0.01).
         
     Returns:
     --------
@@ -1018,20 +1021,35 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
             'data_type': 'Float',
             'long_name': 'global force rate',
             'description': 'The global force rate quantifies how quickly the applied force changes over time. It is obtained as the product of the global stiffness k and the shear speed (F_dot = 1e-3 * k * shear_speed, converting µm/s to mm/s)'
+        },
+        'force rate': {
+            'units': '1/s',
+            'data_type': 'Float',
+            'long_name': 'normalized force rate',
+            'description': 'Normalized loading rate lambda, computed as force rate = F_dot / P_c[1] = (1e-3 * k * shear speed) / P_c[1], where k is in N/mm, shear speed in µm/s, and P_c[1] in N'
+        },
+        'force_rate_unc': {
+            'units': '1/s',
+            'data_type': 'Float',
+            'long_name': 'normalized force rate uncertainty',
+            'description': 'Uncertainty of normalized force rate from P_c uncertainty only, propagated with sigma_lambda = |lambda| * pc_rel_err and pc_rel_err defaulting to 0.01 (1%)'
         }
     }
     
     # Check if analysis columns already exist
     analysis_columns = list(analysis_columns_info.keys())
     existing_columns = [col for col in analysis_columns if col in df_raw.columns]
-    
-    if existing_columns and not force_overwrite:
-        print(f"Analysis columns already exist: {existing_columns}")
-        print("Use force_overwrite=True to update existing analysis data")
-        return df_raw, df_raw_info
-    
+    missing_columns = [col for col in analysis_columns if col not in df_raw.columns]
+
     if existing_columns and force_overwrite:
         print(f"Force overwrite enabled - updating existing analysis columns: {existing_columns}")
+    elif existing_columns and missing_columns:
+        print(f"Analysis columns already exist: {existing_columns}")
+        print(f"Adding missing analysis columns: {missing_columns}")
+        print("Use force_overwrite=True to recompute all existing analysis data")
+    elif existing_columns and not missing_columns:
+        print(f"All analysis columns already exist: {existing_columns}")
+        print("Use force_overwrite=True to update existing analysis data")
     elif not existing_columns:
         print("Adding new analysis columns: " + ", ".join(analysis_columns))
     
@@ -1087,11 +1105,30 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
         else:
             print(f"Warning: AFN {afn} not found in master data")
     
-    # Calculate F_dot (global force rate) for all merged rows
+    def _extract_pc_force(pc_value):
+        """Return force component P_c[1] as float if available, else NaN."""
+        if pc_value is None or (isinstance(pc_value, float) and pd.isna(pc_value)):
+            return np.nan
+        if isinstance(pc_value, np.ndarray):
+            pc_value = pc_value.tolist()
+        if isinstance(pc_value, (list, tuple)) and len(pc_value) >= 2:
+            try:
+                return float(pc_value[1])
+            except (TypeError, ValueError):
+                return np.nan
+        return np.nan
+
+    # Calculate F_dot (global force rate) and force rate (lambda) for all merged rows:
     # F_dot [N/s] = k [N/mm] * shear_speed [µm/s] * 1e-3 [mm/µm]
-    print(f"\nCalculating F_dot (global force rate)...")
+    # force rate [1/s] = F_dot [N/s] / P_c[1] [N]
+    pc_rel_err = abs(float(pc_rel_err))
+    print(f"\nCalculating F_dot (global force rate), force rate (lambda), and force_rate_unc...")
+    print("  Unit check: F_dot = (N/mm)*(µm/s)*(1e-3 mm/µm) -> N/s; lambda = (N/s)/N -> 1/s")
     f_dot_calculated = 0
     f_dot_missing_data = 0
+    force_rate_calculated = 0
+    force_rate_missing_data = 0
+    force_rate_unc_calculated = 0
     
     if 'k' in df_merged.columns and 'shear speed' in df_merged.columns:
         for idx, row in df_merged.iterrows():
@@ -1106,10 +1143,24 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
                     F_dot = 1e-3 * k_val * shear_speed_val  # Convert µm/s to mm/s: 1e-3 mm/µm
                     df_merged.at[idx, 'F_dot'] = F_dot
                     f_dot_calculated += 1
+
+                    pc_force = _extract_pc_force(row['P_c']) if 'P_c' in row.index else np.nan
+                    if pd.notna(pc_force) and abs(pc_force) > 1e-12:
+                        force_rate_val = F_dot / float(pc_force)
+                        if 'force rate' in df_merged.columns:
+                            df_merged.at[idx, 'force rate'] = force_rate_val
+                        if 'force_rate_unc' in df_merged.columns:
+                            df_merged.at[idx, 'force_rate_unc'] = abs(force_rate_val) * pc_rel_err
+                            force_rate_unc_calculated += 1
+                        force_rate_calculated += 1
+                    else:
+                        force_rate_missing_data += 1
                 except (ValueError, TypeError) as e:
                     f_dot_missing_data += 1
+                    force_rate_missing_data += 1
             else:
                 f_dot_missing_data += 1
+                force_rate_missing_data += 1
     else:
         missing_cols = []
         if 'k' not in df_merged.columns:
@@ -1122,10 +1173,20 @@ def merge_load_analyser_data(raw_data_path, raw_info_data_path, force_overwrite=
         print(f"  - Calculated F_dot for {f_dot_calculated} AFNs")
     if f_dot_missing_data > 0:
         print(f"  - Skipped {f_dot_missing_data} AFNs (missing k or shear speed)")
+    if force_rate_calculated > 0:
+        print(f"  - Calculated force rate for {force_rate_calculated} AFNs")
+    if force_rate_missing_data > 0:
+        print(f"  - Skipped {force_rate_missing_data} AFNs for force rate (missing/invalid k, shear speed, or P_c[1])")
+    if force_rate_unc_calculated > 0:
+        print(f"  - Calculated force_rate_unc for {force_rate_unc_calculated} AFNs (pc_rel_err={pc_rel_err:.4f})")
     
     # Ensure F_dot column has consistent data type (float64)
     if 'F_dot' in df_merged.columns:
         df_merged['F_dot'] = pd.to_numeric(df_merged['F_dot'], errors='coerce')
+    if 'force rate' in df_merged.columns:
+        df_merged['force rate'] = pd.to_numeric(df_merged['force rate'], errors='coerce')
+    if 'force_rate_unc' in df_merged.columns:
+        df_merged['force_rate_unc'] = pd.to_numeric(df_merged['force_rate_unc'], errors='coerce')
     
     print(f"\nAnalysis data merge summary:")
     print(f"  - Total AFNs in analysis data: {len(df_analysis)}")
@@ -2667,301 +2728,6 @@ def explore_parquet_data(afn, column_name, raw_data_path, raw_info_data_path):
     
     return None
 
-
-def opt_GI_GII_ODR(
-        df, dim=1, gc0=.6, gc0_I=None, gc0_III=None, exp=2, var='B',
-        indi=False, ifixb=[1, 1, 0, 0],
-        print_results=True, verbose=False,
-        same_exponent=False,
-        n_bounds=(0.1, 10.0),
-        m_bounds=(0.1, 10.0),
-        gc_bounds=(1e-3, 10.0)):
-    """
-    Orthogonal distance regression for GI/GIII interaction law.
-
-    This function is adapted from regression.py (Mode I/II version) with
-    Mode II terms replaced by Mode III terms.
-    """
-    from uncertainties import unumpy
-    from collections import defaultdict
-    from itertools import product
-    from scipy.odr import RealData, Model, ODR
-    from scipy.stats import distributions
-
-    # Accept DataFrame directly or parquet path.
-    if isinstance(df, pd.DataFrame):
-        df_local = df.copy()
-    elif isinstance(df, (str, os.PathLike)):
-        try:
-            df_local = pd.read_parquet(df, engine='fastparquet')
-        except Exception:
-            df_local = pd.read_parquet(df)
-    else:
-        raise TypeError("opt_GI_GII_ODR: 'df' must be a pandas DataFrame or a parquet file path.")
-
-    # Harmonize common project column names (G1c/G3c -> GIc/GIIIc).
-    if 'GIc' not in df_local.columns and 'G1c' in df_local.columns:
-        df_local['GIc'] = df_local['G1c']
-    if 'GIIIc' not in df_local.columns and 'G3c' in df_local.columns:
-        df_local['GIIIc'] = df_local['G3c']
-
-    required_cols = ['GIc', 'GIIIc']
-    missing_cols = [col for col in required_cols if col not in df_local.columns]
-    if missing_cols:
-        raise ValueError(f"opt_GI_GII_ODR: Missing required columns: {missing_cols}")
-
-    def residual(beta, x, var='B', bounds=False):
-        GIc, GIIIc, n, m = beta
-        Gi, Giii = x
-        eps = 1e-12
-        GIc_s = max(float(GIc), eps)
-        GIIIc_s = max(float(GIIIc), eps)
-        n_s = max(float(n), eps)
-        m_s = max(float(m), eps)
-        if same_exponent:
-            m_s = n_s
-        Gi_s = np.clip(np.asarray(Gi, dtype=float), eps, None)
-        Giii_s = np.clip(np.asarray(Giii, dtype=float), eps, None)
-
-        if bounds:
-            n_lo, n_hi = n_bounds
-            m_lo, m_hi = m_bounds
-            gc_lo, gc_hi = gc_bounds
-            if not (gc_lo <= GIc_s <= gc_hi and gc_lo <= GIIIc_s <= gc_hi and n_lo <= n_s <= n_hi and m_lo <= m_s <= m_hi):
-                return np.full_like(Gi_s, 1e3, dtype=float)
-
-        with np.errstate(invalid='ignore'):
-            if var == 'A':
-                res = ((Gi_s / GIc_s) ** n_s + (Giii_s / GIIIc_s) ** m_s) ** (2 / (n_s + m_s)) - 1
-            elif var == 'B':
-                res = ((Gi_s / GIc_s) ** n_s + (Giii_s / GIIIc_s) ** m_s) - 1
-            elif var == 'C':
-                res = ((Gi_s / GIc_s) ** (1 / n_s) + (Giii_s / GIIIc_s) ** (1 / m_s)) - 1
-            elif var == 'BK':
-                denom = np.clip(Gi_s + Giii_s, eps, None)
-                ratio = np.clip(Giii_s / denom, eps, 1.0)
-                res = (GIc_s + (GIIIc_s - GIc_s) * ratio ** m_s) / denom - 1
-            else:
-                raise NotImplementedError(f'Criterion type {var} not implemented.')
-        return res
-
-    def param_jacobian(beta, x, var='B', *args):
-        GIc, GIIIc, n, m = beta
-        Gi, Giii = x
-        eps = 1e-12
-        GIc = max(float(GIc), eps)
-        GIIIc = max(float(GIIIc), eps)
-        n = max(float(n), eps)
-        m = max(float(m), eps)
-        Gi = np.clip(np.asarray(Gi, dtype=float), eps, None)
-        Giii = np.clip(np.asarray(Giii, dtype=float), eps, None)
-
-        with np.errstate(invalid='ignore'):
-            if var == 'A':
-                dGIc = -(2 * Gi * (Gi / GIc) ** (-1 + n) * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * n) / (GIc ** 2 * (m + n))
-                dGIIIc = -((2 * Giii * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (Giii / GIIIc) ** (-1 + m) * m) / (GIIIc ** 2 * (m + n)))
-                dn = (((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (2 * (Gi / GIc) ** n * (m + n) * np.log(Gi / GIc) - 2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) * np.log((Gi / GIc) ** n + (Giii / GIIIc) ** m))) / (m + n) ** 2
-                dm = (((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (-2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) * np.log((Gi / GIc) ** n + (Giii / GIIIc) ** m) + 2 * (Giii / GIIIc) ** m * (m + n) * np.log(Giii / GIIIc))) / (m + n) ** 2
-            elif var == 'B':
-                dGIc = -(((Gi / GIc) ** n * n) / GIc)
-                dGIIIc = -(((Giii / GIIIc) ** m * m) / GIIIc)
-                dn = (Gi / GIc) ** n * np.log(Gi / GIc)
-                dm = (Giii / GIIIc) ** m * np.log(Giii / GIIIc)
-            elif var == 'C':
-                dGIc = -((Gi / GIc) ** (1 / n)) / (GIc * n)
-                dGIIIc = -((Giii / GIIIc) ** (1 / m)) / (GIIIc * m)
-                dn = -((Gi / GIc) ** (1 / n) * np.log(Gi / GIc)) / (n ** 2)
-                dm = -((Giii / GIIIc) ** (1 / m) * np.log(Giii / GIIIc)) / (m ** 2)
-            elif var == 'BK':
-                dGIc = (1 - (Giii / (Gi + Giii)) ** m) / (Gi + Giii)
-                dGIIIc = ((Giii / (Gi + Giii)) ** m) / (Gi + Giii)
-                dn = np.zeros_like(Gi)
-                dm = ((Giii / (Gi + Giii)) ** m * (GIIIc - GIc) * np.log(Giii / (Gi + Giii))) / (Gi + Giii)
-            else:
-                raise NotImplementedError(f'Criterion type {var} not implemented.')
-
-        return np.row_stack([dGIc, dGIIIc, dn, dm])
-
-    def value_jacobian(beta, x, var='B', *args):
-        GIc, GIIIc, n, m = beta
-        Gi, Giii = x
-        eps = 1e-12
-        GIc = max(float(GIc), eps)
-        GIIIc = max(float(GIIIc), eps)
-        n = max(float(n), eps)
-        m = max(float(m), eps)
-        Gi = np.clip(np.asarray(Gi, dtype=float), eps, None)
-        Giii = np.clip(np.asarray(Giii, dtype=float), eps, None)
-
-        if var == 'A':
-            dGi = (2 * (Gi / GIc) ** n * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * n) / (Gi * (m + n))
-            dGiii = (2 * ((Gi / GIc) ** n + (Giii / GIIIc) ** m) ** (-1 + 2 / (m + n)) * (Giii / GIIIc) ** m * m) / (Giii * (m + n))
-        elif var == 'B':
-            dGi = ((Gi / GIc) ** n * n) / Gi
-            dGiii = ((Giii / GIIIc) ** m * m) / Giii
-        elif var == 'C':
-            dGi = ((Gi / GIc) ** (1 / n)) / (n * Gi)
-            dGiii = ((Giii / GIIIc) ** (1 / m)) / (m * Giii)
-        elif var == 'BK':
-            dGi = (-GIc + (1 + m) * (GIc - GIIIc) * (Giii / (Gi + Giii)) ** m) / (Gi + Giii) ** 2
-            dGiii = (-GIc * Giii + (Giii - m * Gi) * (GIc - GIIIc) * (Giii / (Gi + Giii)) ** m) / (Giii * (Gi + Giii) ** 2)
-        else:
-            raise NotImplementedError(f'Criterion type {var} not implemented.')
-
-        return np.row_stack([dGi, dGiii])
-
-    def assemble_data(df_local, dim_local=1, min_std=1e-9):
-        exp_local = np.row_stack(df_local[['GIc', 'GIIIc']].apply(unumpy.nominal_values).values.T).astype(float)
-        std_local = np.row_stack(df_local[['GIc', 'GIIIc']].apply(unumpy.std_devs).values.T).astype(float)
-
-        # Remove invalid rows and floor zero uncertainties to avoid ODR divide-by-zero.
-        valid = (
-            np.isfinite(exp_local[0]) & np.isfinite(exp_local[1]) &
-            np.isfinite(std_local[0]) & np.isfinite(std_local[1])
-        )
-        exp_local = exp_local[:, valid]
-        std_local = std_local[:, valid]
-        std_local = np.clip(std_local, min_std, None)
-
-        ndof_local = exp_local.shape[1] - 4
-        return RealData(exp_local, y=dim_local, sx=std_local), ndof_local
-
-    def get_initial_guesses(gc0_I_local=0.7, gc0_III_local=0.7, exp=2, indi=False, var='B', verbose=False):
-        if isinstance(exp, tuple) and len(exp) == 2:
-            n0 = [exp[0]]
-            m0 = [exp[1]]
-        elif isinstance(exp, (list, np.ndarray)):
-            n0 = m0 = exp
-        else:
-            if var == 'C':
-                n_points = max(int(exp), 6)
-                n0 = m0 = np.geomspace(0.1, 2.0, n_points)
-            else:
-                n0 = m0 = 1 + np.arange(exp)
-
-        if verbose:
-            print('Running the following initial guesses for the exponents (n, m):')
-            print(n0)
-            print()
-
-        if indi:
-            return list(product([gc0_I_local], [gc0_III_local], n0, m0))
-        return np.column_stack([
-            np.full(len(n0), gc0_I_local),
-            np.full(len(n0), gc0_III_local),
-            n0,
-            n0
-        ])
-
-    def run_regression(
-            data, model, beta0,
-            sstol=1e-12, partol=1e-12,
-            maxit=1000, ndigit=12,
-            ifixb=[1, 1, 0, 0],
-            fit_type=1, deriv=3,
-            init=0, iteration=0, final=0):
-        odr = ODR(
-            data,
-            model,
-            beta0=beta0,
-            sstol=sstol,
-            partol=partol,
-            maxit=maxit,
-            ndigit=ndigit,
-            ifixb=ifixb,
-        )
-        odr.set_job(fit_type=fit_type, deriv=deriv)
-        odr.set_iprint(init=init, iter=iteration, final=final)
-        return odr.run()
-
-    def calc_fit_statistics(final, ndof):
-        fit = defaultdict()
-        fit['params'] = final.beta
-        fit['stddev'] = final.sd_beta
-        fit['reduced_chi_squared'] = final.res_var
-        fit['chi_squared'] = ndof * fit['reduced_chi_squared']
-        fit['p_value'] = distributions.chi2.sf(fit['chi_squared'], ndof)
-        fit['R_squared'] = 1 - fit['chi_squared'] / (ndof + fit['chi_squared'])
-        fit['final'] = final
-        return fit
-
-    def results(fit):
-        GIc, GIIIc, n, m = fit['params']
-        chi2 = fit['reduced_chi_squared']
-        pval = fit['p_value']
-        r2 = fit['R_squared']
-        header = 'Variable      Value    Description'.upper()
-        rule = '---'.join(['-' * s for s in [8, 5, 50]])
-        print(header)
-        print(rule)
-        print(f"GIc        {GIc:8.3f}    Mode I fracture toughness")
-        print(f"GIIIc      {GIIIc:8.3f}    Mode III fracture toughness")
-        print(f"n          {n:8.3f}    Interaction-law exponent")
-        print(f"m          {m:8.3f}    Interaction-law exponent")
-        if str(fit.get('var', var)).upper() == 'C':
-            inv_n = np.inf if abs(float(n)) < 1e-15 else 1.0 / float(n)
-            inv_m = np.inf if abs(float(m)) < 1e-15 else 1.0 / float(m)
-            print(f"1/n        {inv_n:8.3f}    Effective exponent in criterion C")
-            print(f"1/m        {inv_m:8.3f}    Effective exponent in criterion C")
-        print(rule)
-        print(f"chi2       {chi2:8.3f}    Reduced chi^2 per DOF (goodness of fit)")
-        print(f"p-value    {pval:8.1e}    p-value (statistically significant if below 0.05)")
-        print(f"R2         {r2:8.3f}    R-squared (not valid for nonlinear regression)")
-        print()
-
-    data, ndof = assemble_data(df_local, dim)
-    model = Model(
-        fcn=residual,
-        fjacb=param_jacobian,
-        fjacd=value_jacobian,
-        implicit=True,
-        extra_args=(var, True)
-    )
-    gc0_I_eff = float(gc0) if gc0_I is None else float(gc0_I)
-    gc0_III_eff = float(gc0) if gc0_III is None else float(gc0_III)
-    guess = get_initial_guesses(
-        gc0_I_local=gc0_I_eff,
-        gc0_III_local=gc0_III_eff,
-        exp=exp,
-        indi=indi,
-        var=var,
-        verbose=verbose
-    )
-    ifixb_eff = list(ifixb)
-    if same_exponent and len(ifixb_eff) >= 4:
-        # Tie n and m by fixing m and evaluating residual with m := n.
-        ifixb_eff[3] = 0
-        guess = [np.array([g[0], g[1], g[2], g[2]], dtype=float) for g in guess]
-    runs_all = []
-    for g in guess:
-        try:
-            runs_all.append(run_regression(
-                data,
-                model,
-                g,
-                ifixb=ifixb_eff,
-                # Numerical derivatives are more robust for constrained/tied exponents.
-                deriv=0 if same_exponent else 3,
-            ))
-        except Exception:
-            continue
-    runs = [r for r in runs_all if np.isfinite(getattr(r, 'sum_square', np.nan))]
-    if not runs:
-        raise RuntimeError("ODR did not converge for any initial guess.")
-    final = runs[np.argmin([run.sum_square for run in runs])]
-    fit = calc_fit_statistics(final, ndof)
-    if same_exponent:
-        fit['params'] = np.array(fit['params'], dtype=float)
-        fit['params'][3] = fit['params'][2]
-        fit['stddev'] = np.array(fit['stddev'], dtype=float)
-        # m is tied to n; report same uncertainty.
-        fit['stddev'][3] = fit['stddev'][2]
-    fit['var'] = var
-    if print_results:
-        results(fit)
-    return fit
-
-
 def optimize_mode_I_III_interaction(
     df_or_path,
     auto_plateau_exponent=True,
@@ -3204,8 +2970,22 @@ def optimize_mode_I_III_interaction(
 
     forced_fits = []
 
-    geo_fit = {'n': np.nan, 'm': np.nan, 'giiic': np.nan, 'chi2': np.nan, 'red_chi2': np.nan, 'rmse_orth': np.nan,
-               'quality': 'unknown', 'method': 'not-run', 'starts_total': 0, 'starts_success': 0, 'x_curve': np.array([]), 'y_curve': np.array([])}
+    geo_fit = {
+        'n': np.nan,
+        'm': np.nan,
+        'giiic': np.nan,
+        'giiic_unc': np.nan,         # optimization-derived 1-sigma from profile chi^2
+        'giiic_ci68': (np.nan, np.nan),
+        'chi2': np.nan,
+        'red_chi2': np.nan,
+        'rmse_orth': np.nan,
+        'quality': 'unknown',
+        'method': 'not-run',
+        'starts_total': 0,
+        'starts_success': 0,
+        'x_curve': np.array([]),
+        'y_curve': np.array([]),
+    }
     plateau_fit = {'enabled': bool(auto_plateau_exponent), 'p_selected': np.nan, 'p_plateau_start': np.nan,
                    'giiic_selected': np.nan, 'chi2_selected': np.nan, 'red_chi2_selected': np.nan, 'rmse_selected': np.nan, 'rows': []}
 
@@ -3436,10 +3216,61 @@ def optimize_mode_I_III_interaction(
         p_geo = float(row_sel['p'])
         g3_geo = float(row_sel['giiic'])
         st = _orth_stats(p_geo, p_geo, gic_ref, g3_geo, max(n_samples, 1200), n_params=2)
+        # Optimization-derived GIIIc uncertainty (conservative):
+        # 1) Primary estimate from plateau-scan rows around selected chi^2,
+        #    so exponent coupling (p <-> GIIIc) contributes to uncertainty.
+        # 2) If that set is empty, fallback to local profile at fixed p.
+        # 3) Use Birge-style scaling with reduced chi^2 to avoid unrealistically
+        #    tight intervals when residual scale is larger than expected.
+        giiic_ci68 = (np.nan, np.nan)
+        giiic_unc = np.nan
+        red_sel = float(st['red_chi2']) if np.isfinite(st.get('red_chi2', np.nan)) else 1.0
+        scale = max(red_sel, 1.0)
+
+        # 68% threshold for 2 parameters (p and GIIIc) around selected chi^2.
+        delta68_2p = 2.30
+        chi2_ref = float(plateau_fit.get('chi2_selected', st['chi2'])) if np.isfinite(plateau_fit.get('chi2_selected', np.nan)) else float(st['chi2'])
+        chi2_cut_rows = chi2_ref + delta68_2p * scale
+        if plateau_fit['rows']:
+            rows68 = [
+                float(r['giiic']) for r in plateau_fit['rows']
+                if np.isfinite(float(r.get('chi2', np.nan)))
+                and np.isfinite(float(r.get('giiic', np.nan)))
+                and float(r['chi2']) <= chi2_cut_rows
+            ]
+            if len(rows68) > 0:
+                g3_lo = float(np.min(rows68))
+                g3_hi = float(np.max(rows68))
+                giiic_ci68 = (g3_lo, g3_hi)
+                giiic_unc = float(max(abs(g3_geo - g3_lo), abs(g3_hi - g3_geo)))
+
+        # Local fallback if plateau rows do not define a CI.
+        if not np.isfinite(giiic_unc):
+            g3_upper = float(max(3.0 * giiic_ref, 1.5 * np.nanmax(giii), eps))
+            g3_lo_scan = max(eps, 0.2 * g3_geo)
+            g3_hi_scan = max(g3_upper, 1.8 * g3_geo)
+            g3_grid = np.linspace(g3_lo_scan, g3_hi_scan, 350, dtype=float)
+            chi2_grid = np.array(
+                [
+                    float(_orth_stats(p_geo, p_geo, gic_ref, float(g3_try), max(350, int(n_samples // 2)), n_params=1)['chi2'])
+                    for g3_try in g3_grid
+                ],
+                dtype=float,
+            )
+            if np.any(np.isfinite(chi2_grid)):
+                chi2_cut68 = float(st['chi2']) + 1.0 * scale
+                m68 = np.isfinite(chi2_grid) & (chi2_grid <= chi2_cut68)
+                if np.any(m68):
+                    g3_lo = float(np.min(g3_grid[m68]))
+                    g3_hi = float(np.max(g3_grid[m68]))
+                    giiic_ci68 = (g3_lo, g3_hi)
+                    giiic_unc = float(max(abs(g3_geo - g3_lo), abs(g3_hi - g3_geo)))
         geo_fit.update({
             'n': p_geo,
             'm': p_geo,
             'giiic': g3_geo,
+            'giiic_unc': giiic_unc,
+            'giiic_ci68': giiic_ci68,
             'chi2': float(st['chi2']),
             'red_chi2': float(st['red_chi2']),
             'rmse_orth': float(st['rmse_orth']),
@@ -3474,6 +3305,8 @@ def optimize_mode_I_III_interaction(
         'giiic_ref': float(giiic_ref),
         'giiic_ref_unc': float(giiic_ref_unc),
         'n_giiic_ref': int(n_giiic_ref),
+        'giiic_unc': float(geo_fit.get('giiic_unc', np.nan)),
+        'giiic_ci68': tuple(geo_fit.get('giiic_ci68', (np.nan, np.nan))),
         'forced_fits': forced_fits,
         'geo_fit': geo_fit,
         'plateau_fit': plateau_fit,
@@ -3507,6 +3340,10 @@ def optimize_mode_I_III_interaction(
         print(f"  subset counts      : N_PST={result['N_PST']}, N_nonPST={result['N_nonPST']}")
         print(f"  GIc reference      : {result['gic_ref']:.4f} +/- {result['gic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_gic_ref']})")
         print(f"  GIIIc reference    : {result['giiic_ref']:.4f} +/- {result['giiic_ref_unc']:.4f} J/m^2 (mean +/- SEM, n={result['n_giiic_ref']})")
+        if np.isfinite(result['giiic_unc']):
+            print(f"  GIIIc optimized     : {result['geo_fit']['giiic']:.4f} +/- {result['giiic_unc']:.4f} J/m^2 (profile 68% at selected p)")
+        else:
+            print(f"  GIIIc optimized     : {result['geo_fit']['giiic']:.4f} +/- - J/m^2 (profile 68% at selected p)")
         print(f"  max GIII/(GI+GIII) : {result['max_ratio_iii']:.4f}")
         print(
             f"  non-PST ratio range: min={result['ratio_nonpst_min']:.4f} +/- {result['ratio_nonpst_min_unc']:.4f}, "
@@ -3518,7 +3355,10 @@ def optimize_mode_I_III_interaction(
         print(f"    method            : {gf['method']}")
         print(f"    n                 : {gf['n']:.4f}")
         print(f"    m                 : {gf['m']:.4f}")
-        print(f"    GIIIc             : {gf['giiic']:.4f} J/m^2 (free)")
+        if np.isfinite(gf.get('giiic_unc', np.nan)):
+            print(f"    GIIIc             : {gf['giiic']:.4f} +/- {gf['giiic_unc']:.4f} J/m^2 (free)")
+        else:
+            print(f"    GIIIc             : {gf['giiic']:.4f} +/- - J/m^2 (free)")
         print(f"    chi^2={gf['chi2']:.4g}, reduced chi^2={gf['red_chi2']:.4g}, RMSE_orth={gf['rmse_orth']:.4g}, quality={gf['quality']}")
         if result['plateau_fit']['enabled']:
             pf = result['plateau_fit']
@@ -3544,7 +3384,10 @@ def optimize_mode_I_III_interaction(
                 print(f"    p 95% CI (Delta chi^2=3.84) : [{result['p_ci95'][0]:.2f}, {result['p_ci95'][1]:.2f}]")
             if int(result.get('band95', {}).get('n_curves', 0)) > 0:
                 print(f"    95% band curves used         : n={int(result['band95']['n_curves'])}")
-            print(f"    selected GIIIc     : {pf['giiic_selected']:.4f} J/m^2")
+            if np.isfinite(result.get('giiic_unc', np.nan)):
+                print(f"    selected GIIIc     : {pf['giiic_selected']:.4f} +/- {result['giiic_unc']:.4f} J/m^2")
+            else:
+                print(f"    selected GIIIc     : {pf['giiic_selected']:.4f} +/- - J/m^2")
             print(f"    chi^2={pf['chi2_selected']:.4g}, reduced chi^2={pf['red_chi2_selected']:.4g}, RMSE_orth={pf['rmse_selected']:.4g}")
         print("=" * 72)
         print("")
