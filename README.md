@@ -52,6 +52,12 @@ The notebook expects a project data root that contains the experiment data folde
 - **Server/shared-drive mode**: SMB mount paths can be configured in `data_config.py`
 - **Local mode**: you can point the data root to a local folder with the same structure
 
+### Public data availability (Parquet)
+
+The Parquet files used by this project are publicly available on Zenodo under **Creative Commons Attribution 4.0 International (CC BY 4.0)**:
+
+- DOI: `10.5281/zenodo.19666533` (use via `https://doi.org/10.5281/zenodo.19666533`)
+
 Minimum required file for running most plots/analysis sections:
 
 - `M3DC_raw.parquet` (typically located in `01_raw_data/04_metadata/`)
