@@ -1,12 +1,18 @@
-# Mode3DC
+# Mode III weak layer fracture tests
 
-Pipeline for processing mode III displacement-controlled snow fracture experiments. From raw data to publication-ready mixed-mode (I + III) fracture toughness results, including analytical modeling, visualization, and digital image analysis of weak-layer out of plane anti-crack behavior.
+Pipeline for processing Mode III displacement-controlled snow fracture experiments. The repository takes raw experimental data to publication-ready mixed-mode (I + III) fracture results, including preprocessing, interactive load-signal annotation, analytical modelling, and standardized visualizations.
+
+## Entry points
+
+- **Main workflow**: `M3DC_Notebook.ipynb`
+- **Reusable code**: `data_config.py`, `visualisation.py`, `layout.py`
+- **Interactive tool** (manual annotation of load–displacement curves): `load_signal_analyser.py`
 
 ## Setup
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.10+ (recommended; tested with modern `pandas/numpy/matplotlib`)
 - Git
 
 ### Installation
@@ -39,6 +45,19 @@ Pipeline for processing mode III displacement-controlled snow fracture experimen
    pip install -r requirements.txt
    ```
 
+## Data: what you need and where it goes
+
+The notebook expects a project data root that contains the experiment data folders (raw CSVs, Excel metadata, videos, and derived Parquet files). Paths are handled via `data_config.py`:
+
+- **Server/shared-drive mode**: SMB mount paths can be configured in `data_config.py`
+- **Local mode**: you can point the data root to a local folder with the same structure
+
+Minimum required file for running most plots/analysis sections:
+
+- `M3DC_raw.parquet` (typically located in `01_raw_data/04_metadata/`)
+
+If you want to rebuild that Parquet file from raw inputs, you also need the corresponding Excel metadata files and load-signal CSV files as described in the notebook’s **Data** section.
+
 ## Project Structure
 
 ```
@@ -46,6 +65,7 @@ Mode3DC/
 ├── data_config.py          # Data configuration and import functions
 ├── layout.py               # Color palette and layout configuration
 ├── load_signal_analyser.py # Interactive load signal analysis tool
+├── visualisation.py        # Plotting and figure-generation functions
 ├── M3DC_Notebook.ipynb     # Main analysis notebook
 ├── requirements.txt        # Python dependencies
 └── README.md              # This file
@@ -55,12 +75,14 @@ Mode3DC/
 
 ### Running the Notebook
 
-1. Start Jupyter:
+1. Start Jupyter (or JupyterLab):
    ```bash
    jupyter notebook
    ```
 
 2. Open `M3DC_Notebook.ipynb` in your browser
+
+3. Run cells from top to bottom. The notebook prints the resolved data paths early on; verify they point to your intended data location.
 
 ### Using the Load Signal Analyser
 
@@ -72,7 +94,7 @@ python load_signal_analyser.py <path_to_parquet_file>
 
 For example:
 ```bash
-python load_signal_analyser.py "/path/to/data/ON4PB_raw.parquet"
+python load_signal_analyser.py "/path/to/data/M3DC_raw.parquet"
 ```
 
 ## Configuration
@@ -83,9 +105,9 @@ The project uses cross-platform server path management. Update the server paths 
 
 ```python
 SERVER_PATHS = {
-    'macos': '/Volumes/Public/04 phds/Adam/02_experiments/02_NotchedBeam',
-    'linux': '/mnt/smb_public/04 phds/Adam/02_experiments/02_NotchedBeam',
-    'windows': 'Z:/04 phds/Adam/02_experiments/02_NotchedBeam'
+    'macos': '/Volumes/<...>',
+    'linux': '/mnt/<...>',
+    'windows': 'Z:/<...>'
 }
 ```
 
@@ -97,7 +119,9 @@ Key dependencies:
 - **matplotlib**: Plotting and visualization
 - **openpyxl**: Excel file reading/writing
 - **fastparquet**: Parquet file support
+- **scipy**: numerical optimization utilities used in fitting/processing
 - **jupyter**: Notebook environment
+- **weac**: weak-layer anticrack nucleation model (installed from GitHub as specified in `requirements.txt`)
 
 See `requirements.txt` for the complete list with version specifications.
 
@@ -107,11 +131,17 @@ See `requirements.txt` for the complete list with version specifications.
 - Color palette is defined in `layout.py` and should be used consistently across visualizations
 - Data paths are configured for cross-platform server access
 
+## Reproducibility tips (publication)
+
+- Prefer running the notebook with **static figures** (`%matplotlib inline`) when preparing the final, shareable version.
+- If you are producing a “clean” notebook for GitHub/publishing, consider clearing very large embedded outputs and regenerating figures as SVG or saving to disk via the notebook.
+
 ## Troubleshooting
 
-### Import Errors
+### Matplotlib font / cache warnings
 
-If you encounter import errors for `visualisation` module, this is expected if the module is not included in the repository. The `load_signal_analyser.py` will work without it, but some visualization styling may not be applied. The import is optional and wrapped in a try/except block.
+- If you don’t have **Minion Pro**, the code will fall back to an available serif font.
+- If Matplotlib warns that its default cache directory is not writable, set `MPLCONFIGDIR` to a writable directory (or run in a local environment where your home directory is writable).
 
 ### Parquet File Issues
 
@@ -125,4 +155,11 @@ pip install fastparquet
 If you encounter issues reading Excel files, ensure `openpyxl` is installed:
 ```bash
 pip install openpyxl
+```
+
+### SciPy missing
+
+If you see errors about `scipy`, install/update dependencies:
+```bash
+pip install -r requirements.txt
 ```

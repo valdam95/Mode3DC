@@ -56,7 +56,7 @@ import layout as lo
 try:
     import visualisation as vis
     # Setup visualization styling if available
-vis.setup_visualization_style()
+    vis.setup_visualization_style()
 except ImportError:
     # visualisation module not available - continue without it
     pass

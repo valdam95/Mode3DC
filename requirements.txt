@@ -2,6 +2,7 @@
 pandas>=2.0.0
 numpy>=1.24.0
 uncertainties>=3.2.2
+scipy>=1.11.0
 
 # Excel file support
 openpyxl>=3.1.0
@@ -22,6 +23,3 @@ ipython>=8.12.0
 
 # Weak-layer anticrack nucleation model (branch will be merged into main)
 weac @ git+https://github.com/2phi/weac.git@feature/modeIII
-
-# PyArrow for Parquet file support
-pyarrow>=15.0.0

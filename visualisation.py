@@ -9,9 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
-import math
 import matplotlib.font_manager as fm
-from typing import Dict, List, Tuple, Optional
 from ipywidgets import (
     Dropdown,
     VBox,
@@ -19,7 +17,7 @@ from ipywidgets import (
 )
 from IPython.display import display
 import layout as lo
-import numpy as np
+ 
 
 # ============================================================================
 # PLOTTING CONFIGURATION
@@ -594,6 +592,22 @@ def plot_distance_force_plot(
         labelpad=labelpad_y,
         color='black',
     )
+    info_text = (
+        r'critical fracture load $P_{\mathrm{c}}$' + "\n"
+        + r'system stiffness $k_{\mathrm{sys}}=\frac{\Delta P}{\Delta u_z}$' + "\n"
+        + r'force offset $P_{\mathrm{off}}$'
+    )
+    ax.text(
+        0.02,
+        0.98,
+        info_text,
+        transform=ax.transAxes,
+        ha='left',
+        va='top',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        color='black',
+        zorder=10,
+    )
     if x_lim is not None:
         ax.set_xlim(x_lim)
     if y_lim is not None:
@@ -617,17 +631,11 @@ def plot_distance_force_plot(
     plt.show()
     return fig
 
-#--- just temp function -- 
-import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
-import pandas as pd
-import layout as lo
-
 def extract_pc_force(value):
     """Return the second element of P_c if available (force component)."""
     if isinstance(value, (list, tuple)) and len(value) >= 2:
         return value[1]
-    return 
+    return None
 
 
 def plot_temperature_density_vs_date(
@@ -2054,9 +2062,9 @@ def plot_mode_I_III_interaction(
         # Upper-right annotation: equation + fit stats.
         if np.isfinite(n_fit) and np.isfinite(m_fit) and n_fit > 0 and m_fit > 0:
             eq_text = (
-                r'$\left(\frac{\mathcal{G}_{\mathrm{I}}}{\mathcal{G}_{\mathrm{Ic}}}\right)^{1/'
+                r'$\left(\frac{\mathcal{G}_{\mathrm{I}}}{\mathcal{G}_{\mathrm{Ic}}}\right)^{'
                 + f'{n_fit:.1f}'
-                + r'} + \left(\frac{\mathcal{G}_{\mathrm{III}}}{\mathcal{G}_{\mathrm{IIIc}}}\right)^{1/'
+                + r'} + \left(\frac{\mathcal{G}_{\mathrm{III}}}{\mathcal{G}_{\mathrm{IIIc}}}\right)^{'
                 + f'{m_fit:.1f}'
                 + r'} = 1$'
             )
@@ -2409,7 +2417,7 @@ def plot_mode_III_ratio_to_GIGIII(
         print("[plot_mode_III_ratio_to_GIGIII] Interaction overlay skipped: invalid n/m/GIIIc or GIc reference.")
 
     ax.set_xlabel(
-        r'Mode mixity $\eta_\mathrm = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
+        r'Mode mixity $\eta_{\mathrm{III}} = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_x,
         color='black',
@@ -2447,7 +2455,7 @@ def plot_mode_III_ratio_to_GIGIII(
     return fig
 
 
-def plot_mode_mixity_force_rate(
+def plot_additional_weights_force_rate(
     df_or_path,
     title=None,
     figsize=(8, 7.5),
@@ -2461,12 +2469,13 @@ def plot_mode_mixity_force_rate(
     frame_thickness=1,
     x_lim=None,
     y_lim=None,
+    total_weights_rel_err=0.01,
 ):
     """
-    Plot normalized force rate over mode mixity.
+    Plot normalized force rate over additional applied load.
 
     x-axis:
-        psi_III = G_III / (G_I + G_III)
+        F_w = total weights * g [N]
     y-axis:
         force rate (lambda) [1/s]
     """
@@ -2480,54 +2489,39 @@ def plot_mode_mixity_force_rate(
             print(f"Error loading parquet: {e}")
             return None
 
-    required_cols = ['G1c', 'G3c', 'force rate']
+    required_cols = ['total weights', 'force rate']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         print(f"Error: Missing required columns: {missing_cols}")
         return None
 
     plot_df = df.copy()
-    plot_df['G1c'] = pd.to_numeric(plot_df['G1c'], errors='coerce')
-    plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce')
+    if 'AFN' in plot_df.columns:
+        afn_numeric = pd.to_numeric(plot_df['AFN'], errors='coerce')
+        plot_df = plot_df[~afn_numeric.isin([1, 2, 3, 4, 5, 6, 7])].copy()
+    plot_df['total weights'] = pd.to_numeric(plot_df['total weights'], errors='coerce')
     plot_df['force rate'] = pd.to_numeric(plot_df['force rate'], errors='coerce')
-    g1_unc_col = 'G1c_uncertainty' if 'G1c_uncertainty' in plot_df.columns else None
-    g3_unc_col = 'G3c_uncertainty' if 'G3c_uncertainty' in plot_df.columns else None
+    plot_df['F_w'] = plot_df['total weights'] * 9.81
+    tw_unc_col = 'total weights_uncertainty' if 'total weights_uncertainty' in plot_df.columns else None
     fr_unc_col = 'force_rate_unc' if 'force_rate_unc' in plot_df.columns else None
-    if g1_unc_col is not None:
-        plot_df['G1c_unc'] = pd.to_numeric(plot_df[g1_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+
+    if tw_unc_col is not None:
+        tw_unc = pd.to_numeric(plot_df[tw_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
     else:
-        plot_df['G1c_unc'] = 0.0
-    if g3_unc_col is not None:
-        plot_df['G3c_unc'] = pd.to_numeric(plot_df[g3_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        plot_df['G3c_unc'] = 0.0
+        tw_unc = (plot_df['total weights'].abs() * abs(float(total_weights_rel_err))).fillna(0.0)
+    plot_df['F_w_unc'] = 9.81 * tw_unc
+
     if fr_unc_col is not None:
         plot_df['force_rate_unc'] = pd.to_numeric(plot_df[fr_unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
     else:
         plot_df['force_rate_unc'] = 0.0
 
-    plot_df['G13_total'] = plot_df['G1c'] + plot_df['G3c']
-    plot_df = plot_df.dropna(subset=['G1c', 'G3c', 'G13_total', 'force rate'])
-    plot_df = plot_df[plot_df['G13_total'] > 0]
+    plot_df = plot_df.dropna(subset=['F_w', 'force rate'])
     if plot_df.empty:
-        print("No valid rows to plot (requires G1c, G3c, force rate with G1c+G3c > 0).")
+        print("No valid rows to plot (requires total weights and force rate; PST excluded).")
         return None
 
-    # Coordinates.
-    plot_df['psi_III'] = plot_df['G3c'] / plot_df['G13_total']
-    plot_df['force_rate_plot'] = plot_df['force rate']
-
-    # Uncertainty propagation for x:
-    # psi_III = G3 / (G1 + G3)
-    g1 = plot_df['G1c'].to_numpy(dtype=float)
-    g3 = plot_df['G3c'].to_numpy(dtype=float)
-    sg1 = plot_df['G1c_unc'].to_numpy(dtype=float)
-    sg3 = plot_df['G3c_unc'].to_numpy(dtype=float)
-    s = np.maximum(g1 + g3, 1e-12)
-    dpsi_dg1 = -g3 / (s ** 2)
-    dpsi_dg3 = g1 / (s ** 2)
-    x_unc = np.sqrt((dpsi_dg1 * sg1) ** 2 + (dpsi_dg3 * sg3) ** 2)
-    plot_df['x_unc'] = np.clip(np.nan_to_num(x_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+    plot_df['x_unc'] = pd.to_numeric(plot_df['F_w_unc'], errors='coerce').fillna(0.0).clip(lower=0.0)
     plot_df['y_unc'] = plot_df['force_rate_unc'].to_numpy(dtype=float)
 
     setup_visualization_style()
@@ -2556,8 +2550,8 @@ def plot_mode_mixity_force_rate(
 
     base_color = lo.COLORS['blue']
     errorbar_color = _get_alpha_equiv_color_from_base(base_color, 0.5)
-    x_vals = plot_df['psi_III'].to_numpy(dtype=float)
-    y_vals = plot_df['force_rate_plot'].to_numpy(dtype=float)
+    x_vals = plot_df['F_w'].to_numpy(dtype=float)
+    y_vals = plot_df['force rate'].to_numpy(dtype=float)
     x_err_vals = plot_df['x_unc'].to_numpy(dtype=float)
     y_err_vals = plot_df['y_unc'].to_numpy(dtype=float)
 
@@ -2600,12 +2594,12 @@ def plot_mode_mixity_force_rate(
             color='black',
             linewidth=1.5,
             linestyle='--',
-            alpha=0.3,
+            alpha=1,
             zorder=2,
         )
 
     ax.set_xlabel(
-        r'Mode mixity $\eta = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
+        r'Additional weights $F_{\mathrm{w}}$ (N) $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_x,
         color='black',
@@ -2637,7 +2631,7 @@ def plot_mode_mixity_force_rate(
             va='bottom',
             fontsize=VISUALIZATION_STYLES['font_size'],
             color='black',
-            alpha=0.5,
+            alpha=1,
             zorder=3,
         )
 
@@ -2661,489 +2655,3 @@ def plot_mode_mixity_force_rate(
     return fig
 
 
-def plot_pc_vs_mode_III_ERR(
-    df_or_path,
-    title=None,
-    figsize=(8, 7.5),
-    dpi=100,
-    alpha=0.8,
-    marker_size=2.3,
-    tick_width=1,
-    tick_length=10,
-    labelpad_x=15,
-    labelpad_y=15,
-    frame_thickness=1,
-    x_lim=None,
-    y_lim=None,
-    pc_rel_err=0.01,
-):
-    """
-    Plot Mode III energy release rate over critical fracture load.
-
-    x-axis:
-        P_c (critical fracture load) [N]
-    y-axis:
-        G_III [J/m^2]
-    """
-    if isinstance(df_or_path, pd.DataFrame):
-        df = df_or_path.copy()
-    else:
-        try:
-            df = pd.read_parquet(df_or_path, engine='fastparquet')
-            print(f"Loaded data from Parquet: {df_or_path}")
-        except Exception as e:
-            print(f"Error loading parquet: {e}")
-            return None
-
-    required_cols = ['P_c', 'G3c']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        print(f"Error: Missing required columns: {missing_cols}")
-        return None
-
-    def _extract_pc_force_local(value):
-        if isinstance(value, np.ndarray):
-            value = value.tolist()
-        if isinstance(value, (list, tuple)) and len(value) >= 2:
-            try:
-                return float(value[1])
-            except (TypeError, ValueError):
-                return np.nan
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return np.nan
-
-    plot_df = df.copy()
-    plot_df['P_c_force'] = plot_df['P_c'].apply(_extract_pc_force_local)
-    plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce')
-
-    # Uncertainties: use existing columns when available; otherwise fallback.
-    if 'P_c_uncertainty' in plot_df.columns:
-        pc_unc_series = pd.to_numeric(plot_df['P_c_uncertainty'], errors='coerce')
-        plot_df['P_c_unc'] = pc_unc_series.fillna(0.0).clip(lower=0.0)
-    else:
-        plot_df['P_c_unc'] = (plot_df['P_c_force'].abs() * abs(float(pc_rel_err))).fillna(0.0)
-
-    if 'G3c_uncertainty' in plot_df.columns:
-        plot_df['G3c_unc'] = pd.to_numeric(plot_df['G3c_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        plot_df['G3c_unc'] = 0.0
-
-    plot_df = plot_df.dropna(subset=['P_c_force', 'G3c'])
-    if plot_df.empty:
-        print("No valid rows to plot (requires numeric P_c and G3c).")
-        return None
-
-    setup_visualization_style()
-    plt.rcParams['font.family'] = SELECTED_FONT
-    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
-    plt.rcParams['mathtext.default'] = 'it'
-
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    base_color = lo.COLORS['blue']
-    x_vals = plot_df['P_c_force'].to_numpy(dtype=float)
-    y_vals = plot_df['G3c'].to_numpy(dtype=float)
-    x_err_vals = plot_df['P_c_unc'].to_numpy(dtype=float)
-    y_err_vals = plot_df['G3c_unc'].to_numpy(dtype=float)
-    with_load_color = lo.COLORS.get('indigo', '#000a51')
-    without_load_color = lo.COLORS.get('lightblue', '#56b4e9')
-    if 'total weights' in plot_df.columns:
-        tw_vals = pd.to_numeric(plot_df['total weights'], errors='coerce').to_numpy(dtype=float)
-        point_colors = np.where(
-            np.isfinite(tw_vals) & (np.abs(tw_vals) > 1e-12),
-            with_load_color,
-            without_load_color,
-        )
-    else:
-        point_colors = without_load_color
-
-    point_error_colors = [_alpha_equivalent_color(c, 0.5) for c in point_colors]
-
-    # Error bars first (background), then markers on top.
-    for i in range(len(x_vals)):
-        errorbar_color_i = point_error_colors[i]
-        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
-                [y_vals[i], y_vals[i]],
-                color=errorbar_color_i,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i], x_vals[i]],
-                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
-                color=errorbar_color_i,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-
-    ax.scatter(
-        x_vals,
-        y_vals,
-        c=point_colors,
-        s=marker_size ** 2 * 10,
-        alpha=alpha,
-        edgecolors='none',
-        zorder=1,
-    )
-
-    ax.set_xlabel(
-        r'Critical fracture load $P_{\mathrm{c}}$ (N) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_x,
-        color='black',
-    )
-    ax.set_ylabel(
-        r'Mode III energy release rate $\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_y,
-        color='black',
-    )
-    if x_lim is not None:
-        ax.set_xlim(x_lim)
-    if y_lim is not None:
-        ax.set_ylim(y_lim)
-    if title is not None:
-        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
-
-    ax.tick_params(
-        axis='both', which='major',
-        labelsize=VISUALIZATION_STYLES['font_size'],
-        pad=10,
-        width=tick_width,
-        length=tick_length,
-        color=TICK_COLOR,
-        bottom=True, top=True, labeltop=False,
-        left=True, right=True, labelright=False,
-        labelcolor='black',
-    )
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(frame_thickness)
-    ax.grid(False)
-    plt.tight_layout()
-    plt.show()
-    return fig
-
-
-def plot_additional_load_vs_pc(
-    df_or_path,
-    title=None,
-    figsize=(8, 7.5),
-    dpi=100,
-    alpha=0.8,
-    marker_size=2.3,
-    tick_width=1,
-    tick_length=10,
-    labelpad_x=15,
-    labelpad_y=15,
-    frame_thickness=1,
-    x_lim=None,
-    y_lim=None,
-    total_weights_rel_err=0.01,
-    pc_rel_err=0.01,
-):
-    """
-    Plot critical fracture load over additional applied load.
-
-    x-axis:
-        F_w = total weights * g [N]
-    y-axis:
-        P_c [N]
-    """
-    if isinstance(df_or_path, pd.DataFrame):
-        df = df_or_path.copy()
-    else:
-        try:
-            df = pd.read_parquet(df_or_path, engine='fastparquet')
-            print(f"Loaded data from Parquet: {df_or_path}")
-        except Exception as e:
-            print(f"Error loading parquet: {e}")
-            return None
-
-    required_cols = ['total weights', 'P_c']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        print(f"Error: Missing required columns: {missing_cols}")
-        return None
-
-    def _extract_pc_force_local(value):
-        if isinstance(value, np.ndarray):
-            value = value.tolist()
-        if isinstance(value, (list, tuple)) and len(value) >= 2:
-            try:
-                return float(value[1])
-            except (TypeError, ValueError):
-                return np.nan
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return np.nan
-
-    plot_df = df.copy()
-    plot_df['total weights'] = pd.to_numeric(plot_df['total weights'], errors='coerce')
-    plot_df['P_c_force'] = plot_df['P_c'].apply(_extract_pc_force_local)
-    plot_df['F_w'] = plot_df['total weights'] * 9.81
-    if 'phi' in plot_df.columns:
-        phi_vals = pd.to_numeric(plot_df['phi'], errors='coerce')
-        plot_df = plot_df[~(phi_vals < 0)].copy()
-    plot_df = plot_df[np.abs(plot_df['P_c_force']) > 1e-12].copy()
-
-    if 'total weights_uncertainty' in plot_df.columns:
-        tw_unc = pd.to_numeric(plot_df['total weights_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        tw_unc = (plot_df['total weights'].abs() * abs(float(total_weights_rel_err))).fillna(0.0)
-    plot_df['F_w_unc'] = 9.81 * tw_unc
-
-    if 'P_c_uncertainty' in plot_df.columns:
-        plot_df['P_c_unc'] = pd.to_numeric(plot_df['P_c_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        plot_df['P_c_unc'] = (plot_df['P_c_force'].abs() * abs(float(pc_rel_err))).fillna(0.0)
-
-    plot_df = plot_df.dropna(subset=['F_w', 'P_c_force'])
-    if plot_df.empty:
-        print("No valid rows to plot (requires numeric total weights and P_c).")
-        return None
-
-    setup_visualization_style()
-    plt.rcParams['font.family'] = SELECTED_FONT
-    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
-    plt.rcParams['mathtext.default'] = 'it'
-
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    base_color = lo.COLORS['blue']
-    errorbar_color = _alpha_equivalent_color(base_color, 0.5)
-    x_vals = plot_df['F_w'].to_numpy(dtype=float)
-    y_vals = plot_df['P_c_force'].to_numpy(dtype=float)
-    x_err_vals = plot_df['F_w_unc'].to_numpy(dtype=float)
-    y_err_vals = plot_df['P_c_unc'].to_numpy(dtype=float)
-
-    # Error bars first (background), then markers on top.
-    for i in range(len(x_vals)):
-        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
-                [y_vals[i], y_vals[i]],
-                color=errorbar_color,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i], x_vals[i]],
-                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
-                color=errorbar_color,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-
-    ax.scatter(
-        x_vals,
-        y_vals,
-        c=base_color,
-        s=marker_size ** 2 * 10,
-        alpha=alpha,
-        edgecolors='none',
-        zorder=1,
-    )
-
-    ax.set_xlabel(
-        r'Additional load $F_{\mathrm{w}}$ (N) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_x,
-        color='black',
-    )
-    ax.set_ylabel(
-        r'Critical fracture load $P_{\mathrm{c}}$ (N) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_y,
-        color='black',
-    )
-    if x_lim is not None:
-        ax.set_xlim(x_lim)
-    if y_lim is not None:
-        ax.set_ylim(y_lim)
-    if title is not None:
-        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
-
-    ax.tick_params(
-        axis='both', which='major',
-        labelsize=VISUALIZATION_STYLES['font_size'],
-        pad=10,
-        width=tick_width,
-        length=tick_length,
-        color=TICK_COLOR,
-        bottom=True, top=True, labeltop=False,
-        left=True, right=True, labelright=False,
-        labelcolor='black',
-    )
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(frame_thickness)
-    ax.grid(False)
-    plt.tight_layout()
-    plt.show()
-    return fig
-
-
-def plot_additional_load_vs_mode_III_ERR(
-    df_or_path,
-    title=None,
-    figsize=(8, 7.5),
-    dpi=100,
-    alpha=0.8,
-    marker_size=2.3,
-    tick_width=1,
-    tick_length=10,
-    labelpad_x=15,
-    labelpad_y=15,
-    frame_thickness=1,
-    x_lim=None,
-    y_lim=None,
-    total_weights_rel_err=0.01,
-):
-    """
-    Plot Mode III energy release rate over additional applied load.
-
-    x-axis:
-        F_w = total weights * g [N]
-    y-axis:
-        G_III [J/m^2]
-    """
-    if isinstance(df_or_path, pd.DataFrame):
-        df = df_or_path.copy()
-    else:
-        try:
-            df = pd.read_parquet(df_or_path, engine='fastparquet')
-            print(f"Loaded data from Parquet: {df_or_path}")
-        except Exception as e:
-            print(f"Error loading parquet: {e}")
-            return None
-
-    required_cols = ['total weights', 'G3c']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        print(f"Error: Missing required columns: {missing_cols}")
-        return None
-
-    plot_df = df.copy()
-    if 'AFN' in plot_df.columns:
-        afn_numeric = pd.to_numeric(plot_df['AFN'], errors='coerce')
-        plot_df = plot_df[~afn_numeric.isin([1, 2, 3, 4, 5, 6, 7])].copy()
-    plot_df['total weights'] = pd.to_numeric(plot_df['total weights'], errors='coerce')
-    plot_df['G3c'] = pd.to_numeric(plot_df['G3c'], errors='coerce')
-    plot_df['F_w'] = plot_df['total weights'] * 9.81
-
-    if 'total weights_uncertainty' in plot_df.columns:
-        tw_unc = pd.to_numeric(plot_df['total weights_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        tw_unc = (plot_df['total weights'].abs() * abs(float(total_weights_rel_err))).fillna(0.0)
-    plot_df['F_w_unc'] = 9.81 * tw_unc
-
-    if 'G3c_uncertainty' in plot_df.columns:
-        plot_df['G3c_unc'] = pd.to_numeric(plot_df['G3c_uncertainty'], errors='coerce').fillna(0.0).clip(lower=0.0)
-    else:
-        plot_df['G3c_unc'] = 0.0
-
-    plot_df = plot_df.dropna(subset=['F_w', 'G3c'])
-    if plot_df.empty:
-        print("No valid rows to plot (requires numeric total weights and G3c).")
-        return None
-
-    setup_visualization_style()
-    plt.rcParams['font.family'] = SELECTED_FONT
-    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
-    plt.rcParams['mathtext.default'] = 'it'
-
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    base_color = lo.COLORS['blue']
-    errorbar_color = _alpha_equivalent_color(base_color, 0.5)
-    x_vals = plot_df['F_w'].to_numpy(dtype=float)
-    y_vals = plot_df['G3c'].to_numpy(dtype=float)
-    x_err_vals = plot_df['F_w_unc'].to_numpy(dtype=float)
-    y_err_vals = plot_df['G3c_unc'].to_numpy(dtype=float)
-
-    # Error bars first (background), then markers on top.
-    for i in range(len(x_vals)):
-        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
-                [y_vals[i], y_vals[i]],
-                color=errorbar_color,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
-            ax.plot(
-                [x_vals[i], x_vals[i]],
-                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
-                color=errorbar_color,
-                alpha=1.0,
-                linewidth=ERRORBAR_STYLES['line_width'],
-                zorder=0,
-            )
-
-    ax.scatter(
-        x_vals,
-        y_vals,
-        c=base_color,
-        s=marker_size ** 2 * 10,
-        alpha=alpha,
-        edgecolors='none',
-        zorder=1,
-    )
-
-    ax.set_xlabel(
-        r'Additional weightd $F_{\mathrm{w}}$ (N) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_x,
-        color='black',
-    )
-    ax.set_ylabel(
-        r'Mode III energy release rate $\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_y,
-        color='black',
-    )
-    if x_lim is not None:
-        ax.set_xlim(x_lim)
-    if y_lim is not None:
-        ax.set_ylim(y_lim)
-    if title is not None:
-        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
-
-    ax.tick_params(
-        axis='both', which='major',
-        labelsize=VISUALIZATION_STYLES['font_size'],
-        pad=10,
-        width=tick_width,
-        length=tick_length,
-        color=TICK_COLOR,
-        bottom=True, top=True, labeltop=False,
-        left=True, right=True, labelright=False,
-        labelcolor='black',
-    )
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(frame_thickness)
-    ax.grid(False)
-    plt.tight_layout()
-    plt.show()
-    return fig

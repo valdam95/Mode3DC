@@ -6,7 +6,7 @@ Plotting styles and configuration have been moved to visualisation.py.
 """
 
 import matplotlib.font_manager as fm
-from typing import Dict, List, Tuple, Optional
+from typing import List, Tuple, Optional
 
 # ============================================================================
 # COLOR PALETTE
