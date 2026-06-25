@@ -2365,7 +2365,8 @@ def display_gen_stats(parquet_path_masters, parquet_path_info):
     Display general statistics of the master dataset.
     
     Currently shows mean and standard deviation for slab density measurements
-    (rho_1 … rho_4, combined slab, and rho_sub).
+    (rho_1 … rho_4, combined slab, and rho_sub), weak layer cut length a
+    (excluding PST experiments, AFN 1..7), and other general dataset metrics.
     
     Parameters
     ----------
@@ -2543,6 +2544,30 @@ def display_gen_stats(parquet_path_masters, parquet_path_info):
             print(f"    {L_col:<8}  — no valid measurements")
     else:
         print(f"    {L_col:<8}  — column not found")
+
+    print()
+
+    # Section: weak layer cut length (excluding PST experiments, AFN 1..7)
+    a_col = 'a'
+    unit_a = _get_unit(a_col)
+    print(f"  Weak layer cut length (excl. PST)  [{unit_a}]")
+    print(f"  {'-' * 46}")
+    if a_col in masters.columns:
+        df_a = masters
+        if 'AFN' in masters.columns:
+            pst_afn_set = {1, 2, 3, 4, 5, 6, 7}
+            afn_numeric = pd.to_numeric(masters['AFN'], errors='coerce')
+            df_a = masters[~afn_numeric.isin(pst_afn_set)]
+        vals_a = pd.to_numeric(df_a[a_col], errors='coerce').dropna()
+        n_a = len(vals_a)
+        if n_a > 0:
+            mean_a = vals_a.mean()
+            std_a = vals_a.std()
+            print(f"    {a_col:<8}  mean = {mean_a:7.1f}  ±  {std_a:5.1f}   (n={n_a})")
+        else:
+            print(f"    {a_col:<8}  — no valid measurements")
+    else:
+        print(f"    {a_col:<8}  — column not found")
 
     print()
 
