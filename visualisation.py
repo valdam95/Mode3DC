@@ -7,9 +7,11 @@ including comprehensive plotting configuration and styling.
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import pandas as pd
 import matplotlib.font_manager as fm
+from pathlib import Path
 from ipywidgets import (
     Dropdown,
     VBox,
@@ -296,6 +298,45 @@ def _alpha_equivalent_color(color, alpha, background='white'):
         return tuple(mixed.tolist())
     except Exception:
         return color
+
+
+def _load_legacy_envelope_xy(path):
+    """Load x/y envelope coordinates from a two-column text file."""
+    try:
+        data = np.loadtxt(path, skiprows=1)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        if data.shape[1] < 2:
+            return None, None
+        x = np.asarray(data[:, 0], dtype=float)
+        y = np.asarray(data[:, 1], dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y)
+        if not np.any(valid):
+            return None, None
+        order = np.argsort(x[valid])
+        return x[valid][order], y[valid][order]
+    except Exception:
+        return None, None
+
+
+def _smooth_legacy_envelope_xy(x, y, n_eval=80):
+    """Densify legacy envelope with a monotone smooth curve for plotting."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 4:
+        return x, y
+    try:
+        from scipy.interpolate import PchipInterpolator
+        x_eval = np.linspace(x[0], x[-1], int(max(n_eval, len(x) * 3)))
+        y_eval = PchipInterpolator(x, y)(x_eval)
+        y_eval[0] = y[0]
+        y_eval[-1] = y[-1]
+        for i in range(1, len(y_eval)):
+            if y_eval[i] > y_eval[i - 1]:
+                y_eval[i] = y_eval[i - 1]
+        return x_eval, np.clip(y_eval, 0.0, None)
+    except Exception:
+        return x, y
 
 
 def draw_errorbar_layout(
@@ -1941,6 +1982,23 @@ def plot_mode_I_III_interaction(
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
 
+    show_legacy_fit = False
+    if x_col == 'G1c' and y_col == 'G3c':
+        legacy_path = Path(__file__).resolve().parent / 'legacy_SH_E1.tex'
+        leg_x, leg_y = _load_legacy_envelope_xy(legacy_path)
+        if leg_x is not None:
+            show_legacy_fit = True
+            leg_x, leg_y = _smooth_legacy_envelope_xy(leg_x, leg_y)
+            ax.plot(
+                leg_x,
+                leg_y,
+                color=lo.COLORS.get('orange', '#fa8200'),
+                linewidth=1.5,
+                alpha=0.7,
+                linestyle='-',
+                zorder=-20,
+            )
+
     def _get_alpha_equiv_color_from_base(base_color, alpha_val):
         color_name = None
         for name, value in lo.COLORS.items():
@@ -2098,8 +2156,10 @@ def plot_mode_I_III_interaction(
             rf'$\mathcal{{G}}_{{\mathrm{{IIIc}}}} = {_fmt_pm(giiic_fit, giiic_unc)}$ J/m$^2$',
             (rf'$\chi^2_{{\nu}} = {red_chi2:.2f}$' if np.isfinite(red_chi2) else r'$\chi^2_{\nu} = -$'),
         ]
+        info_y_top = 0.84
+        info_line_step = 0.045
         ax.text(
-            0.98, 0.84,
+            0.98, info_y_top,
             "\n".join(info_lines),
             transform=ax.transAxes,
             ha='right',
@@ -2108,6 +2168,20 @@ def plot_mode_I_III_interaction(
             fontsize=VISUALIZATION_STYLES['font_size'],
             zorder=20,
         )
+        if show_legacy_fit:
+            lit_y = info_y_top - len(info_lines) * info_line_step - info_line_step * 1.2
+            ax.text(
+                0.98,
+                lit_y,
+                'literature fit:\nmixed-mode I/II',
+                transform=ax.transAxes,
+                ha='right',
+                va='top',
+                color=lo.COLORS.get('orange', '#fa8200'),
+                fontsize=VISUALIZATION_STYLES['font_size'],
+                alpha=1.0,
+                zorder=20,
+            )
     elif x_col == 'G1c' and y_col == 'G3c' and optimization_result is None:
         print("[plot_mode_I_III_interaction] No opt_param provided; plotting scatter only.")
 
@@ -2133,12 +2207,38 @@ def plot_mode_I_III_interaction(
         labelpad=labelpad_x,
         color='black',
     )
-    ax.set_ylabel(
-        mode_label_map[y_key],
-        fontsize=VISUALIZATION_STYLES['font_size'],
-        labelpad=labelpad_y,
-        color='black',
-    )
+    mode_iii_color = lo.COLORS.get('blue', '#2588bf')
+    mode_ii_color = lo.COLORS.get('orange', '#fa8200')
+    if x_col == 'G1c' and y_col == 'G3c':
+        labelpad_ii_extra = 90
+        ax.set_ylabel(
+            mode_label_map['G3'],
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            labelpad=labelpad_y,
+            color=mode_iii_color,
+            alpha=1.0,
+        )
+        ax.annotate(
+            mode_label_map['G2'],
+            xy=(0, 0.5),
+            xycoords='axes fraction',
+            xytext=(-(labelpad_y + labelpad_ii_extra), 0),
+            textcoords='offset points',
+            rotation=90,
+            va='center',
+            ha='center',
+            color=mode_ii_color,
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            alpha=1.0,
+            annotation_clip=False,
+        )
+    else:
+        ax.set_ylabel(
+            mode_label_map[y_key],
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            labelpad=labelpad_y,
+            color='black',
+        )
 
     if x_lim is not None:
         ax.set_xlim(x_lim)
@@ -2176,6 +2276,7 @@ def plot_mode_I_III_interaction(
     return fig
 
 
+
 def plot_mode_III_ratio_to_GIGIII(
     df_or_path,
     title=None,
@@ -2195,6 +2296,9 @@ def plot_mode_III_ratio_to_GIGIII(
     m=None,
     GIIIc=None,
     fit_curve_samples=1200,
+    show_total_err=False,
+    y_lim_total=None,
+    labelpad_y_right=15,
 ):
     """
     Plot Mode III ratio over total mixed-mode energy release rate.
@@ -2207,6 +2311,10 @@ def plot_mode_III_ratio_to_GIGIII(
     Optional red interaction overlay:
         (G_I/GIc)^n + (G_III/GIIIc)^m = 1
     with GIc automatically estimated from PST experiments (AFN 1..7).
+
+    If show_total_err is True, also plot G_tot = G_I + G_II + G_III on a
+    right-hand y-axis in orange, behind the main data and overlay.
+    Both y-axes share the same limits and tick spacing (same J/m^2 scale).
     """
     if isinstance(df_or_path, pd.DataFrame):
         df = df_or_path.copy()
@@ -2244,6 +2352,25 @@ def plot_mode_III_ratio_to_GIGIII(
     if plot_df.empty:
         print("No valid rows to plot (requires G1c, G3c with G1c+G3c > 0).")
         return None
+
+    show_total = bool(show_total_err)
+    if show_total:
+        if 'G2c' not in plot_df.columns:
+            print("Error: show_total_err=True requires column 'G2c'.")
+            return None
+        plot_df['G2c'] = pd.to_numeric(plot_df['G2c'], errors='coerce')
+        if 'G2c_uncertainty' in plot_df.columns:
+            plot_df['G2c_unc'] = pd.to_numeric(
+                plot_df['G2c_uncertainty'], errors='coerce'
+            ).fillna(0.0).clip(lower=0.0)
+        else:
+            plot_df['G2c_unc'] = 0.0
+        plot_df['Gtot'] = plot_df['G1c'] + plot_df['G2c'] + plot_df['G3c']
+        plot_df = plot_df.dropna(subset=['G2c', 'Gtot'])
+        plot_df = plot_df[plot_df['Gtot'] > 0]
+        if plot_df.empty:
+            print("No valid rows to plot (requires G2c with G1c+G2c+G3c > 0).")
+            return None
 
     # GIc reference from PST subset (AFN 1..7), same rule as in
     # plot_mode_I_III_interaction; fallback to all rows if PST subset is empty.
@@ -2283,6 +2410,14 @@ def plot_mode_III_ratio_to_GIGIII(
     y_unc = np.sqrt(sg1 ** 2 + sg3 ** 2)
     plot_df['x_unc'] = np.clip(np.nan_to_num(x_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
     plot_df['y_unc'] = np.clip(np.nan_to_num(y_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+    if show_total:
+        g2 = plot_df['G2c'].to_numpy(dtype=float)
+        sg2 = plot_df['G2c_unc'].to_numpy(dtype=float)
+        gtot_unc = np.sqrt(sg1 ** 2 + sg2 ** 2 + sg3 ** 2)
+        plot_df['Gtot_plot'] = plot_df['Gtot']
+        plot_df['Gtot_unc'] = np.clip(
+            np.nan_to_num(gtot_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None
+        )
 
     setup_visualization_style()
     plt.rcParams['font.family'] = SELECTED_FONT
@@ -2292,6 +2427,13 @@ def plot_mode_III_ratio_to_GIGIII(
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
+    ax2 = None
+    if show_total:
+        ax2 = ax.twinx()
+        ax2.set_facecolor('white')
+        ax2.set_zorder(0)
+        ax.set_zorder(1)
+        ax.patch.set_visible(False)
 
     def _get_alpha_equiv_color_from_base(base_color, alpha_val):
         color_name = None
@@ -2314,6 +2456,41 @@ def plot_mode_III_ratio_to_GIGIII(
     y_vals = plot_df['G13_plot'].to_numpy(dtype=float)
     x_err_vals = plot_df['x_unc'].to_numpy(dtype=float)
     y_err_vals = plot_df['y_unc'].to_numpy(dtype=float)
+
+    if show_total and ax2 is not None:
+        total_color = lo.COLORS.get('orange', '#fa8200')
+        total_alpha = 0.7
+        gtot_vals = plot_df['Gtot_plot'].to_numpy(dtype=float)
+        gtot_err_vals = plot_df['Gtot_unc'].to_numpy(dtype=float)
+        for i in range(len(x_vals)):
+            if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
+                ax2.plot(
+                    [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
+                    [gtot_vals[i], gtot_vals[i]],
+                    color=total_color,
+                    alpha=total_alpha,
+                    linewidth=ERRORBAR_STYLES['line_width'],
+                    zorder=-30,
+                )
+            if np.isfinite(gtot_err_vals[i]) and gtot_err_vals[i] > 0:
+                ax2.plot(
+                    [x_vals[i], x_vals[i]],
+                    [gtot_vals[i] - gtot_err_vals[i], gtot_vals[i] + gtot_err_vals[i]],
+                    color=total_color,
+                    alpha=total_alpha,
+                    linewidth=ERRORBAR_STYLES['line_width'],
+                    zorder=-30,
+                )
+        ax2.scatter(
+            x_vals,
+            gtot_vals,
+            c=total_color,
+            s=marker_size ** 2 * 10,
+            alpha=total_alpha,
+            edgecolors='none',
+            marker=MARKER_RG2,
+            zorder=-20,
+        )
 
     # Error bars first (background), then markers on top.
     for i in range(len(x_vals)):
@@ -2422,8 +2599,326 @@ def plot_mode_III_ratio_to_GIGIII(
         labelpad=labelpad_x,
         color='black',
     )
+    combined_label_color = (
+        lo.COLORS.get('blue', '#2588bf') if show_total else 'black'
+    )
     ax.set_ylabel(
-        r'Combined energy release rate $\mathcal{G}_{I+III}=\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
+        r'Combined energy release rate $\mathcal{G}_{\mathrm{I+III}}=\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_y,
+        color=combined_label_color,
+    )
+    if x_lim is not None:
+        ax.set_xlim(x_lim)
+    if show_total and ax2 is not None:
+        if y_lim is not None:
+            shared_ylim = y_lim
+        elif y_lim_total is not None:
+            shared_ylim = y_lim_total
+        else:
+            gtot_vals_lim = plot_df['Gtot_plot'].to_numpy(dtype=float)
+            gtot_err_vals_lim = plot_df['Gtot_unc'].to_numpy(dtype=float)
+            ymin = np.nanmin([
+                np.nanmin(y_vals - y_err_vals),
+                np.nanmin(gtot_vals_lim - gtot_err_vals_lim),
+            ])
+            ymax = np.nanmax([
+                np.nanmax(y_vals + y_err_vals),
+                np.nanmax(gtot_vals_lim + gtot_err_vals_lim),
+            ])
+            pad = 0.04 * (ymax - ymin) if ymax > ymin else 0.0
+            shared_ylim = (ymin - pad, ymax + pad)
+        ax.set_ylim(shared_ylim)
+        ax2.set_ylim(shared_ylim)
+        ax2.set_ylabel(
+            r'Total energy release rate $\mathcal{G}_{\mathrm{tot}}=\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{II}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
+            fontsize=VISUALIZATION_STYLES['font_size'],
+            labelpad=labelpad_y_right,
+            color=lo.COLORS.get('orange', '#fa8200'),
+        )
+    elif y_lim is not None:
+        ax.set_ylim(y_lim)
+    if title is not None:
+        ax.set_title(title, fontsize=VISUALIZATION_STYLES['font_size'], pad=20)
+
+    ax.tick_params(
+        axis='both', which='major',
+        labelsize=VISUALIZATION_STYLES['font_size'],
+        pad=10,
+        width=tick_width,
+        length=tick_length,
+        color=TICK_COLOR,
+        bottom=True, top=True, labeltop=False,
+        left=True, right=not show_total,
+        labelright=False,
+        labelcolor='black',
+    )
+    if show_total and ax2 is not None:
+        ax2.tick_params(
+            axis='y', which='major',
+            labelsize=VISUALIZATION_STYLES['font_size'],
+            pad=10,
+            width=tick_width,
+            length=tick_length,
+            color=TICK_COLOR,
+            left=False,
+            right=True,
+            labelleft=False,
+            labelright=False,
+        )
+        ax2.set_yticklabels([])
+        ax2.spines['right'].set_visible(True)
+        ax2.spines['right'].set_linewidth(frame_thickness)
+        ax2.spines['right'].set_color(lo.COLORS.get('orange', '#fa8200'))
+        ax2.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(frame_thickness)
+    ax.grid(False)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_mode_III_ratio_to_Gtot(
+    df_or_path,
+    title=None,
+    figsize=(8, 7.5),
+    dpi=100,
+    alpha=0.8,
+    marker_size=2.3,
+    tick_width=1,
+    tick_length=10,
+    labelpad_x=15,
+    labelpad_y=15,
+    frame_thickness=1,
+    x_lim=None,
+    y_lim=None,
+    fit_param=None,
+    n=None,
+    m=None,
+    GIIIc=None,
+    fit_curve_samples=1200,
+):
+    """
+    Plot Mode III ratio over total mixed-mode energy release rate (modes I+II+III).
+
+    x-axis:
+        psi_III = G_III / (G_I + G_II + G_III)
+    y-axis:
+        G_tot = G_I + G_II + G_III
+
+    Styling and optional interaction overlay match plot_mode_III_ratio_to_GIGIII.
+    The overlay path assumes G_II = 0 on the fitted I/III interaction law.
+    """
+    if isinstance(df_or_path, pd.DataFrame):
+        df = df_or_path.copy()
+    else:
+        try:
+            df = pd.read_parquet(df_or_path, engine='fastparquet')
+            print(f"Loaded data from Parquet: {df_or_path}")
+        except Exception as e:
+            print(f"Error loading parquet: {e}")
+            return None
+
+    required_cols = ['G1c', 'G2c', 'G3c']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        print(f"Error: Missing required columns: {missing_cols}")
+        return None
+
+    plot_df = df.copy()
+    for col in required_cols:
+        plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce')
+    for col, unc_col, out_col in (
+        ('G1c', 'G1c_uncertainty', 'G1c_unc'),
+        ('G2c', 'G2c_uncertainty', 'G2c_unc'),
+        ('G3c', 'G3c_uncertainty', 'G3c_unc'),
+    ):
+        if unc_col in plot_df.columns:
+            plot_df[out_col] = pd.to_numeric(plot_df[unc_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+        else:
+            plot_df[out_col] = 0.0
+
+    plot_df['Gtot'] = plot_df['G1c'] + plot_df['G2c'] + plot_df['G3c']
+    plot_df = plot_df.dropna(subset=required_cols + ['Gtot'])
+    plot_df = plot_df[plot_df['Gtot'] > 0]
+    if plot_df.empty:
+        print("No valid rows to plot (requires G1c, G2c, G3c with G1c+G2c+G3c > 0).")
+        return None
+
+    gic_ref = np.nan
+    gic_ref_sem = np.nan
+    gic_ref_n = 0
+    if 'AFN' in plot_df.columns:
+        afn_num = pd.to_numeric(plot_df['AFN'], errors='coerce')
+        pst_mask = afn_num.round().isin([1, 2, 3, 4, 5, 6, 7])
+        gic_seed = plot_df.loc[pst_mask, 'G1c'] if pst_mask.any() else plot_df['G1c']
+    else:
+        gic_seed = plot_df['G1c']
+    gic_seed = pd.to_numeric(gic_seed, errors='coerce').dropna()
+    if not gic_seed.empty:
+        gic_ref = float(gic_seed.mean())
+        gic_ref_n = int(gic_seed.shape[0])
+        if gic_ref_n > 1:
+            gic_ref_sem = float(gic_seed.std(ddof=1) / np.sqrt(gic_ref_n))
+        else:
+            gic_ref_sem = 0.0
+
+    plot_df['psi_III'] = plot_df['G3c'] / plot_df['Gtot']
+    plot_df['Gtot_plot'] = plot_df['Gtot']
+
+    g1 = plot_df['G1c'].to_numpy(dtype=float)
+    g2 = plot_df['G2c'].to_numpy(dtype=float)
+    g3 = plot_df['G3c'].to_numpy(dtype=float)
+    sg1 = plot_df['G1c_unc'].to_numpy(dtype=float)
+    sg2 = plot_df['G2c_unc'].to_numpy(dtype=float)
+    sg3 = plot_df['G3c_unc'].to_numpy(dtype=float)
+    s = np.maximum(g1 + g2 + g3, 1e-12)
+    dpsi_dg1 = -g3 / (s ** 2)
+    dpsi_dg2 = -g3 / (s ** 2)
+    dpsi_dg3 = (g1 + g2) / (s ** 2)
+    x_unc = np.sqrt((dpsi_dg1 * sg1) ** 2 + (dpsi_dg2 * sg2) ** 2 + (dpsi_dg3 * sg3) ** 2)
+    y_unc = np.sqrt(sg1 ** 2 + sg2 ** 2 + sg3 ** 2)
+    plot_df['x_unc'] = np.clip(np.nan_to_num(x_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+    plot_df['y_unc'] = np.clip(np.nan_to_num(y_unc, nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
+
+    setup_visualization_style()
+    plt.rcParams['font.family'] = SELECTED_FONT
+    plt.rcParams['mathtext.fontset'] = MATH_FONT_SET
+    plt.rcParams['mathtext.default'] = 'it'
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    def _get_alpha_equiv_color_from_base(base_color, alpha_val):
+        color_name = None
+        for name, value in lo.COLORS.items():
+            if str(value).lower() == str(base_color).lower():
+                color_name = name
+                break
+        if (
+            color_name is not None
+            and hasattr(lo, 'COLORS_ALPHA_EQUIV')
+            and color_name in lo.COLORS_ALPHA_EQUIV
+            and alpha_val in lo.COLORS_ALPHA_EQUIV[color_name]
+        ):
+            return lo.COLORS_ALPHA_EQUIV[color_name][alpha_val]
+        return _alpha_equivalent_color(base_color, alpha_val)
+
+    base_color = lo.COLORS['blue']
+    errorbar_color = _get_alpha_equiv_color_from_base(base_color, 0.5)
+    x_vals = plot_df['psi_III'].to_numpy(dtype=float)
+    y_vals = plot_df['Gtot_plot'].to_numpy(dtype=float)
+    x_err_vals = plot_df['x_unc'].to_numpy(dtype=float)
+    y_err_vals = plot_df['y_unc'].to_numpy(dtype=float)
+
+    for i in range(len(x_vals)):
+        if np.isfinite(x_err_vals[i]) and x_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i] - x_err_vals[i], x_vals[i] + x_err_vals[i]],
+                [y_vals[i], y_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+        if np.isfinite(y_err_vals[i]) and y_err_vals[i] > 0:
+            ax.plot(
+                [x_vals[i], x_vals[i]],
+                [y_vals[i] - y_err_vals[i], y_vals[i] + y_err_vals[i]],
+                color=errorbar_color,
+                alpha=1.0,
+                linewidth=ERRORBAR_STYLES['line_width'],
+                zorder=0,
+            )
+
+    ax.scatter(
+        x_vals,
+        y_vals,
+        c=base_color,
+        s=marker_size ** 2 * 10,
+        alpha=0.8,
+        edgecolors='none',
+        zorder=1,
+    )
+
+    fit_band_color = lo.COLORS.get('blue', '#2588bf')
+    fit_line_color = lo.COLORS.get('indigo', '#000a51')
+
+    n_fit = m_fit = giii_fit = np.nan
+    if isinstance(fit_param, dict):
+        band = fit_param.get('band95_ratio', fit_param.get('band95', {}))
+        xb = np.asarray(band.get('x', []), dtype=float)
+        yb_lo = np.asarray(band.get('y_low', []), dtype=float)
+        yb_hi = np.asarray(band.get('y_high', []), dtype=float)
+        vband = (
+            xb.size > 1 and xb.size == yb_lo.size and xb.size == yb_hi.size
+            and np.all(np.isfinite(xb)) and np.all(np.isfinite(yb_lo)) and np.all(np.isfinite(yb_hi))
+        )
+        if vband:
+            order = np.argsort(xb)
+            ax.fill_between(
+                xb[order],
+                yb_lo[order],
+                yb_hi[order],
+                color=fit_band_color,
+                alpha=0.3,
+                linewidth=0.0,
+                zorder=-10,
+            )
+        geo = fit_param.get('geo_fit', {})
+        n_fit = float(geo.get('n', np.nan))
+        m_fit = float(geo.get('m', np.nan))
+        giii_fit = float(geo.get('giiic', np.nan))
+
+    if not (np.isfinite(n_fit) and np.isfinite(m_fit) and np.isfinite(giii_fit)):
+        try:
+            n_fit = float(n)
+            m_fit = float(m)
+            giii_fit = float(GIIIc)
+        except Exception:
+            n_fit = m_fit = giii_fit = np.nan
+
+    if (
+        np.isfinite(n_fit) and np.isfinite(m_fit) and np.isfinite(giii_fit)
+        and n_fit > 0.0 and m_fit > 0.0 and giii_fit > 0.0
+        and np.isfinite(gic_ref) and gic_ref > 0.0
+    ):
+        t = np.linspace(0.0, 1.0, max(int(fit_curve_samples), 200))
+        gi_curve = gic_ref * t
+        with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+            giii_curve = giii_fit * np.power(np.clip(1.0 - np.power(t, n_fit), 0.0, None), 1.0 / m_fit)
+        gtot_curve = gi_curve + giii_curve
+        psi_curve = np.divide(giii_curve, np.maximum(gtot_curve, 1e-12))
+        valid_curve = np.isfinite(psi_curve) & np.isfinite(gtot_curve)
+        if np.any(valid_curve):
+            order = np.argsort(psi_curve[valid_curve])
+            ax.plot(
+                psi_curve[valid_curve][order],
+                gtot_curve[valid_curve][order],
+                color=fit_line_color,
+                linewidth=1.5,
+                alpha=0.9,
+                linestyle='-',
+                zorder=3,
+            )
+        print("")
+        print("[plot_mode_III_ratio_to_Gtot] Interaction overlay")
+        print(f"  GIc (auto, PST AFN 1..7): {gic_ref:.4f} +/- {gic_ref_sem:.4f} J/m^2 (n={gic_ref_n})")
+        print(f"  n={n_fit:.4f}, m={m_fit:.4f}, GIIIc={giii_fit:.4f} J/m^2")
+    elif (fit_param is not None) or (n is not None and m is not None and GIIIc is not None):
+        print("[plot_mode_III_ratio_to_Gtot] Interaction overlay skipped: invalid n/m/GIIIc or GIc reference.")
+
+    ax.set_xlabel(
+        r'Mode mixity $\eta_{\mathrm{III}} = \mathcal{G}_{\mathrm{III}}/(\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{II}}+\mathcal{G}_{\mathrm{III}})$ $\longrightarrow$',
+        fontsize=VISUALIZATION_STYLES['font_size'],
+        labelpad=labelpad_x,
+        color='black',
+    )
+    ax.set_ylabel(
+        r'Total energy release rate $\mathcal{G}_{\mathrm{tot}}=\mathcal{G}_{\mathrm{I}}+\mathcal{G}_{\mathrm{II}}+\mathcal{G}_{\mathrm{III}}$ (J/m$^2$) $\longrightarrow$',
         fontsize=VISUALIZATION_STYLES['font_size'],
         labelpad=labelpad_y,
         color='black',
